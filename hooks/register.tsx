@@ -1,10 +1,15 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
 
-import { GIT, STATUS, TOP, TRACKS, TREES, show } from '../core/commands.ts'
+import { DIFF, FETCH, FETCH_ENV, GIT, HEAD, STATUS, TOP, TRACKS, TREES, added, show } from '../core/commands.ts'
 import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
+import { ancestors, dim } from '../core/ancestry.ts'
+import { NEW, parseChanges } from '../core/changes.ts'
+import { addMine } from '../core/mine.ts'
+import { grown } from '../core/remote.ts'
 import { track, trees } from '../core/refs.ts'
+import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { parseShow } from '../core/show.ts'
 import { C, chip, personColor } from '../core/theme.ts'
 import type { Seg } from '../core/theme.ts'
@@ -18,6 +23,11 @@ const open = atom({ plugin: 'git-graph', key: 'open' } as const, '')
 const detail = atom({ plugin: 'git-graph', key: 'detail' } as const, null)
 const refs = atom({ plugin: 'git-graph', key: 'refs' } as const, { heads: [], tracks: {}, trees: [] })
 const wide = atom({ plugin: 'git-graph', key: 'wide' } as const, false)
+const isDirtyOpen = atom({ plugin: 'git-graph', key: 'isDirtyOpen' } as const, false)
+const changes = atom({ plugin: 'git-graph', key: 'changes' } as const, null)
+const isTraced = atom({ plugin: 'git-graph', key: 'isTraced' } as const, false)
+const isWatching = atom({ plugin: 'git-graph', key: 'isWatching' } as const, false)
+const mine = atom({ plugin: 'git-graph', key: 'mine' } as const, [])
 
 const FOLDED_LANES = 3
 const WIDE = 72
@@ -47,7 +57,66 @@ async function refresh($: EngineInterface) {
   // ponytail: skip writes when nothing moved, so the pane redraws only on change
   await update($, note, prev => (prev === msg ? prev : msg))
   await update($, dirty, prev => (prev === changed ? prev : changed))
+  if (changed > 0 && (await read($, isDirtyOpen))) await loadChanges($)
   await update($, lines, prev => (prev.join('\n') === got.join('\n') ? prev : got))
+}
+
+// the uncommitted files: tracked ones from the diff against HEAD, untracked ones from status
+async function loadChanges($: EngineInterface) {
+  const [d, st] = await Promise.all([DIFF, STATUS].map(argv => $.process.run(argv).catch(() => undefined)))
+  const got = parseChanges(d?.exitCode === 0 ? d.stdout : '', st?.exitCode === 0 ? st.stdout : '')
+  await update($, changes, prev => (JSON.stringify(prev) === JSON.stringify(got) ? prev : got))
+}
+
+async function toggleChanges($: EngineInterface) {
+  let isOpening = false
+  await update($, isDirtyOpen, prev => (isOpening = !prev))
+  if (isOpening) await loadChanges($)
+}
+
+const FETCH_EVERY = 60_000
+let watch: Timer | undefined
+let isChecking = false
+let isFetchDown = false
+
+// fetch, refresh, and toast when a local branch fell further behind its upstream; never throws
+async function check($: EngineInterface) {
+  if (isChecking) return
+  isChecking = true
+  try {
+    const before = (await read($, refs)).tracks
+    const r = await $.process.run(FETCH, { env: FETCH_ENV, timeoutMs: 30_000 }).catch(() => undefined)
+    if (r?.exitCode !== 0) {
+      // one toast per failure streak
+      if (!isFetchDown) $.ui.toast('원격을 가져오지 못했어요 (git fetch 실패)')
+      isFetchDown = true
+      return
+    }
+    isFetchDown = false
+    await refresh($)
+    const news = grown(before, (await read($, refs)).tracks)
+    if (news.length > 0) $.ui.toast(`origin 에 새 커밋: ${news.join(', ')}`)
+  } catch {
+    // a failed check must not reach the pane
+  } finally {
+    isChecking = false
+  }
+}
+
+async function toggleWatch($: EngineInterface) {
+  let isOn = false
+  await update($, isWatching, prev => (isOn = !prev))
+  watch?.cancel()
+  watch = undefined
+  if (!isOn) return
+  isFetchDown = false
+  watch = $.clock.every(FETCH_EVERY, () => void check($))
+  void check($)
+}
+
+async function head($: EngineInterface) {
+  const r = await $.process.run(HEAD).catch(() => undefined)
+  return r?.exitCode === 0 ? r.stdout.trim() : ''
 }
 
 async function toggle($: EngineInterface, hash: string, short: string) {
@@ -61,6 +130,12 @@ async function toggle($: EngineInterface, hash: string, short: string) {
   await update($, detail, prev => (prev?.hash === hash ? got : prev))
 }
 
+// puts text in the prompt box (never sends it); says so when the box could not take it
+async function say($: EngineInterface, text: string, mode: 'replace' | 'insert' = 'replace') {
+  const r = await $.prompt.fill({ text, mode }).catch(() => undefined)
+  if (!r?.isFilled) $.ui.toast('프롬프트 입력창에 넣지 못했어요')
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'git-graph', description: 'git 그래프 패널 열기/닫기' })
@@ -72,7 +147,14 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    // a Bash call that moved HEAD made commits: remember them for the marker
+    const before = await head($)
     const ran = await next(e)
+    const after = await head($)
+    if (after && after !== before) {
+      const r = await $.process.run(added(before, after)).catch(() => undefined)
+      if (r?.exitCode === 0) await update($, mine, prev => addMine(prev, r.stdout)).catch(() => {})
+    }
     void refresh($).catch(() => {})
     return ran
   })
@@ -102,9 +184,28 @@ export const register: Register = on => {
     const changed = await read($, dirty)
     const openHash = await read($, open)
     const shown = await read($, detail)
+    const isChangesOpen = await read($, isDirtyOpen)
+    const files = await read($, changes)
+    const isWatch = await read($, isWatching)
+    const isOn = await read($, isTraced)
+    const kin = isOn ? ancestors(await read($, lines)) : null
+    const made = new Set(await read($, mine))
     const seg = ({ text, ...style }: Seg) => <Text {...style}>{text}</Text>
 
-    const card = (d: GraphDetail) => {
+    // a file line: its columns, the folder dim, the name a button that puts @path in the prompt box
+    const fileLine = (key: string, path: string, cut: number, cols: RenderChildren) => (
+      <Box key={`row:${key}`} overflow="hidden">
+        <Text wrap="truncate-start">
+          {cols}
+          <Text color={C.gray}>{path.slice(0, cut)}</Text>
+        </Text>
+        <Button key={key} plain hover={{ color: C.blue }} onPress={() => void say($, mention(path), 'insert')}>
+          {path.slice(cut)}
+        </Button>
+      </Box>
+    )
+
+    const card = (d: GraphDetail, short: string) => {
       const [title = '', ...rest] = d.body.split('\n')
       const more = rest.join('\n').trim()
       const adds = d.files.reduce((n, f) => n + (Number(f.add) || 0), 0)
@@ -121,18 +222,58 @@ export const register: Register = on => {
                 {`파일 ${d.files.length}개 `}
                 <Text color={C.green}>{`+${adds}`}</Text> <Text color={C.red}>{`−${dels}`}</Text>
               </Text>
-              {d.files.slice(0, MAX_FILES).map(f => {
+              {d.files.slice(0, MAX_FILES).map((f, i) => {
                 const cut = f.path.lastIndexOf('/') + 1
-                return (
-                  <Text wrap="truncate-start">
-                    <Text color={C.green}>{`+${f.add}`.padStart(5)}</Text>
-                    <Text color={C.red}>{` −${f.del}`.padEnd(6)}</Text>
-                    <Text color={C.gray}>{f.path.slice(0, cut)}</Text>
-                    <Text color={C.fg}>{f.path.slice(cut)}</Text>
-                  </Text>
-                )
+                return fileLine(`f:${d.hash}:${i}`, f.path, cut, [
+                  <Text color={C.green}>{`+${f.add}`.padStart(5)}</Text>,
+                  <Text color={C.red}>{` −${f.del}`.padEnd(6)}</Text>,
+                ])
               })}
               {d.files.length > MAX_FILES && <Text color={C.gray}>{`… 외 ${d.files.length - MAX_FILES}개`}</Text>}
+              <Box>
+                {[['explain', '설명', explain], ['review', '리뷰', review], ['compare', 'HEAD 와 비교', compare]].map(([k, label, ask]) => (
+                  <Box key={`box:ask:${k}`} marginRight={1}>
+                    <Button key={`ask:${k}`} plain hover={{ color: C.blue }} onPress={() => void say($, (ask as typeof explain)(short))}>
+                      {label as string}
+                    </Button>
+                  </Box>
+                ))}
+              </Box>
+            </Box>
+          )}
+        </Box>
+      )
+    }
+
+    const changesCard = () => {
+      const adds = (files ?? []).reduce((n, f) => n + (Number(f.add) || 0), 0)
+      const dels = (files ?? []).reduce((n, f) => n + (Number(f.del) || 0), 0)
+      return (
+        <Box flexDirection="column" marginLeft={2} borderStyle="round" borderColor={C.sel} paddingX={1}>
+          {files === null ? (
+            <Text color={C.gray}>불러오는 중…</Text>
+          ) : (
+            <Box flexDirection="column">
+              <Text color={C.gray}>
+                {`파일 ${files.length}개 `}
+                <Text color={C.green}>{`+${adds}`}</Text> <Text color={C.red}>{`−${dels}`}</Text>
+              </Text>
+              {files.slice(0, MAX_FILES).map((f, i) =>
+                fileLine(`d:${i}`, f.path, f.path.lastIndexOf('/') + 1, [
+                  f.add === NEW ? (
+                    <Text color={C.cyan}>{'new'.padStart(5)}</Text>
+                  ) : (
+                    <Text color={C.green}>{`+${f.add}`.padStart(5)}</Text>
+                  ),
+                  <Text color={C.red}>{f.add === NEW ? ''.padEnd(6) : ` −${f.del}`.padEnd(6)}</Text>,
+                ]),
+              )}
+              {files.length > MAX_FILES && <Text color={C.gray}>{`… 외 ${files.length - MAX_FILES}개`}</Text>}
+              <Box key="box:ask:commit-message">
+                <Button key="ask:commit-message" plain hover={{ color: C.blue }} onPress={() => void say($, COMMIT_MESSAGE)}>
+                  커밋 메시지 정리
+                </Button>
+              </Box>
             </Box>
           )}
         </Box>
@@ -141,24 +282,43 @@ export const register: Register = on => {
 
     // the top lines (fold button, uncommitted count), and the HEAD row once it scrolled out
     const top = (pin: string) => [
-      lanes > FOLDED_LANES && (
-        // a hover needs a keyed Box around it to know what the pointer is over
-        <Box key={`${pin}lanes-bar`}>
-          <Button key={`${pin}lanes`} plain dimColor hover={{ color: C.blue }} onPress={() => void update($, wide, v => !v)}>
-            {isWide ? '◂ 가지 접기' : `▸ 가지 ${lanes}개 모두 보기`}
+      <Box key={`${pin}bar`}>
+        {lanes > FOLDED_LANES && (
+          // a hover needs a keyed Box around it to know what the pointer is over
+          <Box key={`${pin}lanes-bar`} marginRight={2}>
+            <Button key={`${pin}lanes`} plain dimColor hover={{ color: C.blue }} onPress={() => void update($, wide, v => !v)}>
+              {isWide ? '◂ 가지 접기' : `▸ 가지 ${lanes}개 모두 보기`}
+            </Button>
+          </Box>
+        )}
+        <Box key={`${pin}remote-bar`} marginRight={2}>
+          <Button key={`${pin}remote`} plain dimColor={!isWatch} hover={{ color: C.blue }} onPress={() => void toggleWatch($).catch(() => {})}>
+            {isWatch ? '원격 확인 끄기' : '원격 확인'}
+          </Button>
+        </Box>
+        <Box key={`${pin}trace-bar`}>
+          <Button key={`${pin}trace`} plain dimColor={!isOn} hover={{ color: C.blue }} onPress={() => void update($, isTraced, v => !v)}>
+            {isOn ? '경로 강조 끄기' : '경로 강조'}
+          </Button>
+        </Box>
+      </Box>,
+      changed > 0 && (
+        <Box key={`${pin}dirty-bar`}>
+          <Text color={C.yellow}>◌ </Text>
+          <Button key={`${pin}dirty`} plain hover={{ color: C.blue }} onPress={() => void toggleChanges($).catch(() => {})}>
+            {`커밋 안 한 변경 ${changed}개`}
           </Button>
         </Box>
       ),
-      changed > 0 && (
-        <Text>
-          <Text color={C.gray}>◌ </Text>
-          <Text italic color={C.yellow}>커밋 안 한 변경 {changed}개</Text>
-        </Text>
-      ),
+      // the card sits in place only: the pinned copy is just the lines
+      !pin && changed > 0 && isChangesOpen && changesCard(),
     ]
 
     const commit = (row: Row, pin: string) => {
       const isOpen = openHash === row.hash
+      // off the path to HEAD: graph, chips and subject go gray
+      const isOff = kin !== null && !kin.has(row.hash)
+      const paint = (segs: Seg[]) => (isOff ? dim(segs) : segs)
       return (
         <Box
           key={`${pin}${row.hash}`}
@@ -166,12 +326,13 @@ export const register: Register = on => {
           hover={row.isHead || isOpen ? undefined : { backgroundColor: C.hover }}
         >
           <Box flexShrink={0}>
-            <Text>{row.graph.map(seg)}</Text>
+            <Text>{paint(row.graph).map(seg)}</Text>
           </Box>
           <Box flexGrow={1} flexShrink={1} overflow="hidden">
             <Text wrap="truncate-end">
-              {(row.isHead ? [chip('HEAD', C.blue), ...row.refs] : row.refs).flatMap(s => [seg(s), ' '])}
-              <Text color={row.isHead ? C.white : C.fg} bold={row.isHead}>{row.subject}</Text>
+              {paint(row.isHead ? [chip('HEAD', C.blue), ...row.refs] : row.refs).flatMap(s => [seg(s), ' '])}
+              {made.has(row.hash) && <Text color={C.yellow}>✦ </Text>}
+              <Text color={isOff ? C.gray : row.isHead ? C.white : C.fg} bold={row.isHead}>{row.subject}</Text>
             </Text>
           </Box>
           <Box flexShrink={0} marginLeft={1}>
@@ -212,7 +373,7 @@ export const register: Register = on => {
           ) : (
             <Box flexDirection="column">
               {commit(row, '')}
-              {openHash === row.hash && shown?.hash === row.hash && card(shown)}
+              {openHash === row.hash && shown?.hash === row.hash && card(shown, row.short)}
             </Box>
           ),
         )}

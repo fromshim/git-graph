@@ -1,7 +1,12 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 import { layout } from '../core/layout.ts'
+import { grown } from '../core/remote.ts'
 import { age, refChips, track, trees } from '../core/refs.ts'
+import { ancestors, dim } from '../core/ancestry.ts'
+import { parseChanges } from '../core/changes.ts'
+import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
+import { MINE_CAP, addMine } from '../core/mine.ts'
 import { parseShow } from '../core/show.ts'
 
 const S = '\x1f'
@@ -107,15 +112,16 @@ test('the pane draws rows, the HEAD chip and the uncommitted count; a hash opens
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: PROPS, requestId: 'git-graph' })
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
-    expect(texts).toContain('커밋 안 한 변경 2개')
+    expect(await ui.find({ key: 'dirty' })).toBeDefined()
+    expect((await ui.find({ key: 'dirty' }))?.text).toBe('커밋 안 한 변경 2개')
     expect(texts).toContain(' HEAD ')
     expect(texts).toContain('root commit')
     await ui.press({ key: 'c:aaaaaaa' })
     const opened = (await ui.findAll({ type: 'Text' })).map(t => t.text)
-    expect(opened).toContain('main.ts')
+    expect(await ui.find({ type: 'Button', text: 'main.ts' })).toBeDefined()
     expect(opened).toContain('why')
     await ui.press({ key: 'c:aaaaaaa' })
-    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).not.toContain('main.ts')
+    expect(await ui.find({ type: 'Button', text: 'main.ts' })).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -180,4 +186,228 @@ test('parseShow splits the message from the numstat rows', () => {
   const d = parseShow('abc1234', 'Title line\n\nbody text\n\x1e\n3\t1\tsrc/a.ts\n-\t-\tlogo.png\n')
   expect(d.body).toBe('Title line\n\nbody text')
   expect(d.files).toEqual([{ add: '3', del: '1', path: 'src/a.ts' }, { add: '-', del: '-', path: 'logo.png' }])
+})
+
+test('prompt texts and @mentions: a rename mentions its new path', () => {
+  expect([explain('abc1234'), review('abc1234'), compare('abc1234')]).toEqual([
+    '커밋 abc1234 을 설명해줘', '커밋 abc1234 을 리뷰해줘', '커밋 abc1234 부터 HEAD 까지 바뀐 점을 정리해줘',
+  ])
+  expect(COMMIT_MESSAGE).toBe('지금 변경을 커밋 메시지로 정리해줘')
+  expect([mention('src/a.ts'), mention('src/{old => new}/a.ts'), mention('a.ts => b.ts'), mention('{ => lib}/a.ts')]).toEqual([
+    '@src/a.ts ', '@src/new/a.ts ', '@b.ts ', '@lib/a.ts ',
+  ])
+})
+
+test('an open card hands the commit to Claude: buttons fill the prompt box, a file inserts @path, a refusal toasts', async ($, on) => {
+  const fills: { text: string; mode: string }[] = []
+  const toasts: string[] = []
+  let isFilled = true
+  on('process.run', async (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'show' ? 'Merge it\n\nwhy\n\x1e\n4\t2\tsrc/app/main.ts\n' : e.argv[1] === 'log' ? LOG : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('prompt.fill', async (_, e) => {
+    fills.push({ text: e.text, mode: e.mode })
+    return { isFilled }
+  })
+  on('ui.toast', async (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  expect(await ui.find({ key: 'ask:review' })).toBeUndefined()
+  await ui.press({ key: 'c:aaaaaaa' })
+  await ui.press({ key: 'ask:explain' })
+  await ui.press({ key: 'ask:review' })
+  await ui.press({ key: 'ask:compare' })
+  await ui.press({ key: 'f:aaaaaaa1:0' })
+  expect(fills).toEqual([
+    { text: '커밋 aaaaaaa 을 설명해줘', mode: 'replace' },
+    { text: '커밋 aaaaaaa 을 리뷰해줘', mode: 'replace' },
+    { text: '커밋 aaaaaaa 부터 HEAD 까지 바뀐 점을 정리해줘', mode: 'replace' },
+    { text: '@src/app/main.ts ', mode: 'insert' },
+  ])
+  expect(toasts).toEqual([])
+  isFilled = false
+  await ui.press({ key: 'ask:review' })
+  expect(toasts).toEqual(['프롬프트 입력창에 넣지 못했어요'])
+  await ui.unmount()
+})
+
+test('addMine keeps the newest first, drops repeats and stays capped', () => {
+  expect(addMine(['b'], 'a\n\nb\n')).toEqual(['a', 'b'])
+  expect(addMine(['b'], '')).toEqual(['b'])
+  expect(addMine([], Array.from({ length: MINE_CAP + 5 }, (_, i) => `h${i}`).join('\n'))).toHaveLength(MINE_CAP)
+})
+
+test('a Bash call that moves HEAD marks the new commits with ✦; one that does not marks nothing', async ($, on) => {
+  const calls: string[][] = []
+  let heads = ['old', 'aaaaaaa1']
+  on('process.run', async (_, e) => {
+    calls.push([...e.argv])
+    const out = e.argv[2] === 'HEAD' ? (heads.shift() ?? 'aaaaaaa1') : e.argv[1] === 'rev-list' ? 'bbbbbbb2\n' : e.argv[1] === 'log' ? LOG : ''
+    return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('tool.call', async () => ({ result: {} }))
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const marks = async () => {
+    const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+    const n = (await ui.findAll({ type: 'Text', text: '✦' })).filter(t => t.text === '✦ ').length
+    await ui.unmount()
+    return n
+  }
+  expect(await marks()).toBe(0)
+  await $.tool.call({ tool: 'Bash', command: 'git commit -m x' })
+  expect(calls.find(a => a[1] === 'rev-list')).toEqual(['git', 'rev-list', '-n', '50', 'old..aaaaaaa1'])
+  expect(await marks()).toBe(1)
+  // HEAD unchanged: no rev-list
+  heads = ['aaaaaaa1', 'aaaaaaa1']
+  calls.length = 0
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  expect(calls.some(a => a[1] === 'rev-list')).toBe(false)
+})
+
+test('parseChanges lists tracked counts, then untracked files as new', () => {
+  expect(parseChanges('3\t1\tsrc/a.ts\n-\t-\tlogo.png\n', ' M src/a.ts\n?? b.txt\n?? "c d.txt"\nA  x\n')).toEqual([
+    { add: '3', del: '1', path: 'src/a.ts' },
+    { add: '-', del: '-', path: 'logo.png' },
+    { add: 'new', del: '', path: 'b.txt' },
+    { add: 'new', del: '', path: 'c d.txt' },
+  ])
+  expect(parseChanges('', '')).toEqual([])
+})
+
+test('the uncommitted line opens a card of changed files; a file inserts @path, the button asks for a message', async ($, on) => {
+  const fills: { text: string; mode: string }[] = []
+  on('process.run', async (_, e) => ({
+    value: {
+      exitCode: 0,
+      stdout: e.argv[1] === 'status' ? ' M src/a.ts\n?? b.txt\n' : e.argv[1] === 'diff' ? '3\t1\tsrc/a.ts\n' : e.argv[1] === 'log' ? LOG : '',
+      stderr: '', isStdoutTruncated: false, isStderrTruncated: false,
+    },
+  }))
+  on('prompt.fill', async (_, e) => {
+    fills.push({ text: e.text, mode: e.mode })
+    return { isFilled: true }
+  })
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  expect(await ui.find({ key: 'ask:commit-message' })).toBeUndefined()
+  await ui.press({ key: 'dirty' })
+  expect((await ui.find({ key: 'd:0' }))?.text).toBe('a.ts')
+  expect((await ui.find({ key: 'd:1' }))?.text).toBe('b.txt')
+  expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('  new')
+  await ui.press({ key: 'd:0' })
+  await ui.press({ key: 'ask:commit-message' })
+  expect(fills).toEqual([{ text: '@src/a.ts ', mode: 'insert' }, { text: '지금 변경을 커밋 메시지로 정리해줘', mode: 'replace' }])
+  await ui.press({ key: 'dirty' })
+  expect(await ui.find({ key: 'd:0' })).toBeUndefined()
+  await ui.unmount()
+})
+
+// HEAD sits on h1; x1 is a side tip off the same parent p
+const TRACE_LOG = [
+  log('hhhhhhh1', 'ppppppp9', 'HEAD -> main', 'TJ', 'on the path'),
+  log('xxxxxxx2', 'ppppppp9', 'feat', 'TJ', 'off the path'),
+  log('ppppppp9', '', '', 'TJ', 'root'),
+]
+
+test('ancestors walks parents from HEAD; none without HEAD; dim grays colors but not blanks', () => {
+  expect([...(ancestors(TRACE_LOG) ?? [])].sort()).toEqual(['hhhhhhh1', 'ppppppp9'])
+  expect(ancestors(TRACE_LOG.slice(1))).toBeNull()
+  expect(dim([{ text: '┿', color: '#fff' }, { text: ' ' }, { text: ' x ', backgroundColor: '#f00', color: '#000', bold: true }])).toEqual([
+    { text: '┿', color: '#5c6370', backgroundColor: undefined },
+    { text: ' ', color: undefined, backgroundColor: undefined },
+    { text: ' x ', backgroundColor: '#5c6370', color: '#000', bold: true },
+  ])
+})
+
+test('the 경로 강조 toggle grays rows off the HEAD path, in the top bar and in its pinned copy', async ($, on) => {
+  on('process.run', async (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'log' ? TRACE_LOG.join('\n') : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const color = async (ui: { findAll: (q: { type: string; text: string }) => Promise<{ text: string; props: Record<string, unknown> }[]> }, subject: string) => (await ui.findAll({ type: 'Text', text: subject })).find(t => t.text === subject)?.props.color
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조')
+  expect(await color(ui, 'off the path')).toBe('#abb2bf')
+  await ui.press({ key: 'trace' })
+  expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조 끄기')
+  expect(await color(ui, 'off the path')).toBe('#5c6370')
+  expect(await color(ui, 'on the path')).not.toBe('#5c6370')
+  expect(await color(ui, 'root')).not.toBe('#5c6370')
+  await ui.press({ key: 'trace' })
+  expect(await color(ui, 'off the path')).toBe('#abb2bf')
+  await ui.unmount()
+  const down = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: { ...PROPS, scroll: { offset: 5, bodyRows: 3 } }, requestId: 'git-graph' })
+  expect(await down.find({ key: 'pin:trace' })).toBeDefined()
+  expect(await down.find({ key: 'pin:remote' })).toBeDefined()
+  await down.unmount()
+})
+
+test('grown names the branches that fell further behind, by how much', () => {
+  expect(grown({ main: '↓1', dev: '↑1' }, { main: '↑1 ↓3', dev: '↑1', feat: '↓2' })).toEqual(['main ↓2', 'feat ↓2'])
+  expect(grown({ main: '↓3' }, { main: '↓1' })).toEqual([])
+  expect(grown({}, {})).toEqual([])
+})
+
+test('원격 확인 fetches without prompts, toasts new commits once, one toast per failure streak, and stops when off', async ($, on) => {
+  const clock = mock.clock(on)
+  const toasts: string[] = []
+  const fetches: Record<string, string>[] = []
+  let isDown = false
+  let fetched = false
+  on('process.run', async (_, e) => {
+    if (e.argv[1] === 'fetch') {
+      fetches.push({ ...e.init?.env })
+      fetched = !isDown
+      return { value: { exitCode: isDown ? 128 : 0, stdout: '', stderr: isDown ? 'no network' : '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    const out = e.argv[1] === 'for-each-ref' ? `main\t[behind ${fetched ? 3 : 1}]\n` : e.argv[1] === 'log' ? LOG : ''
+    return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.toast', async (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  expect((await ui.find({ key: 'remote' }))?.text).toBe('원격 확인')
+  await clock.advance(120_000)
+  expect(fetches).toHaveLength(0)
+  await ui.press({ key: 'remote' })
+  expect((await ui.find({ key: 'remote' }))?.text).toBe('원격 확인 끄기')
+  expect(fetches).toEqual([{ GIT_TERMINAL_PROMPT: '0', GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' }])
+  expect(toasts).toEqual(['origin 에 새 커밋: main ↓2'])
+  // nothing grew on the next round: no toast
+  await clock.advance(60_000)
+  expect(fetches).toHaveLength(2)
+  expect(toasts).toHaveLength(1)
+  // a failing fetch: one toast for the whole streak
+  isDown = true
+  await clock.advance(60_000)
+  await clock.advance(60_000)
+  expect(fetches).toHaveLength(4)
+  expect(toasts).toHaveLength(2)
+  expect(toasts[1]).toContain('git fetch')
+  // off: the timer stops
+  await ui.press({ key: 'remote' })
+  await clock.advance(180_000)
+  expect(fetches).toHaveLength(4)
+  await ui.unmount()
 })

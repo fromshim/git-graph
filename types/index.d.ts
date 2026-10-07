@@ -14,6 +14,11 @@ declare module 'claude-code' {
       detail: GraphDetail | null
       refs: GraphRefs
       wide: boolean
+      mine: string[]
+      isWatching: boolean
+      isTraced: boolean
+      isDirtyOpen: boolean
+      changes: GraphFile[] | null
     }
   }
 }

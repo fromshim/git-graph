@@ -1,6 +1,6 @@
 {
   "name": "git-graph",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Claude Code 터미널 옆 패널에 저장소의 git 그래프를 실시간으로 그린다",
   "author": { "name": "seungboshim", "url": "https://github.com/seungboshim" },
   "homepage": "https://github.com/fromshim/git-graph",
