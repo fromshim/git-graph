@@ -4,6 +4,7 @@ import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 import { DIFF, GIT, HEAD, STATUS, TOP, TRACKS, TREES, added, show } from '../core/commands.ts'
 import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
+import { ancestors, dim } from '../core/ancestry.ts'
 import { NEW, parseChanges } from '../core/changes.ts'
 import { addMine } from '../core/mine.ts'
 import { track, trees } from '../core/refs.ts'
@@ -23,6 +24,7 @@ const refs = atom({ plugin: 'git-graph', key: 'refs' } as const, { heads: [], tr
 const wide = atom({ plugin: 'git-graph', key: 'wide' } as const, false)
 const isDirtyOpen = atom({ plugin: 'git-graph', key: 'isDirtyOpen' } as const, false)
 const changes = atom({ plugin: 'git-graph', key: 'changes' } as const, null)
+const isTraced = atom({ plugin: 'git-graph', key: 'isTraced' } as const, false)
 const mine = atom({ plugin: 'git-graph', key: 'mine' } as const, [])
 
 const FOLDED_LANES = 3
@@ -142,6 +144,8 @@ export const register: Register = on => {
     const shown = await read($, detail)
     const isChangesOpen = await read($, isDirtyOpen)
     const files = await read($, changes)
+    const isOn = await read($, isTraced)
+    const kin = isOn ? ancestors(await read($, lines)) : null
     const made = new Set(await read($, mine))
     const seg = ({ text, ...style }: Seg) => <Text {...style}>{text}</Text>
 
@@ -235,14 +239,21 @@ export const register: Register = on => {
 
     // the top lines (fold button, uncommitted count), and the HEAD row once it scrolled out
     const top = (pin: string) => [
-      lanes > FOLDED_LANES && (
-        // a hover needs a keyed Box around it to know what the pointer is over
-        <Box key={`${pin}lanes-bar`}>
-          <Button key={`${pin}lanes`} plain dimColor hover={{ color: C.blue }} onPress={() => void update($, wide, v => !v)}>
-            {isWide ? '◂ 가지 접기' : `▸ 가지 ${lanes}개 모두 보기`}
+      <Box key={`${pin}bar`}>
+        {lanes > FOLDED_LANES && (
+          // a hover needs a keyed Box around it to know what the pointer is over
+          <Box key={`${pin}lanes-bar`} marginRight={2}>
+            <Button key={`${pin}lanes`} plain dimColor hover={{ color: C.blue }} onPress={() => void update($, wide, v => !v)}>
+              {isWide ? '◂ 가지 접기' : `▸ 가지 ${lanes}개 모두 보기`}
+            </Button>
+          </Box>
+        )}
+        <Box key={`${pin}trace-bar`}>
+          <Button key={`${pin}trace`} plain dimColor={!isOn} hover={{ color: C.blue }} onPress={() => void update($, isTraced, v => !v)}>
+            {isOn ? '경로 강조 끄기' : '경로 강조'}
           </Button>
         </Box>
-      ),
+      </Box>,
       changed > 0 && (
         <Box key={`${pin}dirty-bar`}>
           <Text color={C.yellow}>◌ </Text>
@@ -257,6 +268,9 @@ export const register: Register = on => {
 
     const commit = (row: Row, pin: string) => {
       const isOpen = openHash === row.hash
+      // off the path to HEAD: graph, chips and subject go gray
+      const isOff = kin !== null && !kin.has(row.hash)
+      const paint = (segs: Seg[]) => (isOff ? dim(segs) : segs)
       return (
         <Box
           key={`${pin}${row.hash}`}
@@ -264,13 +278,13 @@ export const register: Register = on => {
           hover={row.isHead || isOpen ? undefined : { backgroundColor: C.hover }}
         >
           <Box flexShrink={0}>
-            <Text>{row.graph.map(seg)}</Text>
+            <Text>{paint(row.graph).map(seg)}</Text>
           </Box>
           <Box flexGrow={1} flexShrink={1} overflow="hidden">
             <Text wrap="truncate-end">
-              {(row.isHead ? [chip('HEAD', C.blue), ...row.refs] : row.refs).flatMap(s => [seg(s), ' '])}
+              {paint(row.isHead ? [chip('HEAD', C.blue), ...row.refs] : row.refs).flatMap(s => [seg(s), ' '])}
               {made.has(row.hash) && <Text color={C.yellow}>✦ </Text>}
-              <Text color={row.isHead ? C.white : C.fg} bold={row.isHead}>{row.subject}</Text>
+              <Text color={isOff ? C.gray : row.isHead ? C.white : C.fg} bold={row.isHead}>{row.subject}</Text>
             </Text>
           </Box>
           <Box flexShrink={0} marginLeft={1}>

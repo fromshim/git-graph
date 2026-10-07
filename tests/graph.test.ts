@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { layout } from '../core/layout.ts'
 import { age, refChips, track, trees } from '../core/refs.ts'
+import { ancestors, dim } from '../core/ancestry.ts'
 import { parseChanges } from '../core/changes.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { MINE_CAP, addMine } from '../core/mine.ts'
@@ -310,4 +311,46 @@ test('the uncommitted line opens a card of changed files; a file inserts @path, 
   await ui.press({ key: 'dirty' })
   expect(await ui.find({ key: 'd:0' })).toBeUndefined()
   await ui.unmount()
+})
+
+// HEAD sits on h1; x1 is a side tip off the same parent p
+const TRACE_LOG = [
+  log('hhhhhhh1', 'ppppppp9', 'HEAD -> main', 'TJ', 'on the path'),
+  log('xxxxxxx2', 'ppppppp9', 'feat', 'TJ', 'off the path'),
+  log('ppppppp9', '', '', 'TJ', 'root'),
+]
+
+test('ancestors walks parents from HEAD; none without HEAD; dim grays colors but not blanks', () => {
+  expect([...(ancestors(TRACE_LOG) ?? [])].sort()).toEqual(['hhhhhhh1', 'ppppppp9'])
+  expect(ancestors(TRACE_LOG.slice(1))).toBeNull()
+  expect(dim([{ text: '┿', color: '#fff' }, { text: ' ' }, { text: ' x ', backgroundColor: '#f00', color: '#000', bold: true }])).toEqual([
+    { text: '┿', color: '#5c6370', backgroundColor: undefined },
+    { text: ' ', color: undefined, backgroundColor: undefined },
+    { text: ' x ', backgroundColor: '#5c6370', color: '#000', bold: true },
+  ])
+})
+
+test('the 경로 강조 toggle grays rows off the HEAD path, in the top bar and in its pinned copy', async ($, on) => {
+  on('process.run', async (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'log' ? TRACE_LOG.join('\n') : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const color = async (ui: { findAll: (q: { type: string; text: string }) => Promise<{ text: string; props: Record<string, unknown> }[]> }, subject: string) => (await ui.findAll({ type: 'Text', text: subject })).find(t => t.text === subject)?.props.color
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조')
+  expect(await color(ui, 'off the path')).toBe('#abb2bf')
+  await ui.press({ key: 'trace' })
+  expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조 끄기')
+  expect(await color(ui, 'off the path')).toBe('#5c6370')
+  expect(await color(ui, 'on the path')).not.toBe('#5c6370')
+  expect(await color(ui, 'root')).not.toBe('#5c6370')
+  await ui.press({ key: 'trace' })
+  expect(await color(ui, 'off the path')).toBe('#abb2bf')
+  await ui.unmount()
+  const down = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: { ...PROPS, scroll: { offset: 5, bodyRows: 3 } }, requestId: 'git-graph' })
+  expect(await down.find({ key: 'pin:trace' })).toBeDefined()
+  await down.unmount()
 })
