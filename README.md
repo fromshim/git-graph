@@ -2,6 +2,10 @@
 
 [한국어](README.md) | [English](README.en.md)
 
+<p align="center">
+  <img src="assets/preview.svg" alt="git-graph 패널 미리보기: 가지마다 색이 다른 커밋 그래프, 칩, 펼친 커밋 카드" width="720">
+</p>
+
 Claude Code 터미널 옆 패널에 저장소의 git 그래프를 실시간으로 그리는 mod 입니다.
 
 `/plugin install git-graph@fromshim`
@@ -19,6 +23,10 @@ Claude Code 터미널 옆 패널에 저장소의 git 그래프를 실시간으�
 - `/git-graph` 로 패널을 열고 닫습니다.
 
 ### 칩 범례
+
+<p>
+  <img src="assets/legend.ko.svg" alt="칩 범례: 로컬 브랜치, 원격 브랜치, 태그, 워크트리, HEAD" width="480">
+</p>
 
 | 칩 | 뜻 |
 | --- | --- |
@@ -58,6 +66,8 @@ Claude Code 터미널 옆 패널에 저장소의 git 그래프를 실시간으�
 claude plugin validate .
 claude plugin test .
 ```
+
+미리보기 다시 그리기: `npx -y tsx scripts/preview.ts` 를 저장소 루트에서 실행하면 `assets/` 의 SVG 를 `core/` 레이아웃으로 다시 만듭니다.
 
 ### 구조
 

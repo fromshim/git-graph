@@ -2,6 +2,10 @@
 
 [한국어](README.md) | [English](README.en.md)
 
+<p align="center">
+  <img src="assets/preview.svg" alt="git-graph pane preview: a commit graph with one color per lane, chips and an expanded commit card" width="720">
+</p>
+
 A Claude Code mod that draws your repository's git graph, live, in a side pane next to the terminal.
 
 `/plugin install git-graph@fromshim`
@@ -19,6 +23,10 @@ A Claude Code mod that draws your repository's git graph, live, in a side pane n
 - `/git-graph` opens and closes the pane.
 
 ### Chip legend
+
+<p>
+  <img src="assets/legend.en.svg" alt="Chip legend: local branch, remote branch, tag, worktree, HEAD" width="480">
+</p>
 
 | Chip | Meaning |
 | --- | --- |
@@ -58,6 +66,8 @@ Or standalone, from this repository:
 claude plugin validate .
 claude plugin test .
 ```
+
+Regenerate the preview: run `npx -y tsx scripts/preview.ts` from the repo root to redraw the SVGs in `assets/` with the `core/` layout.
 
 ### Structure
 
