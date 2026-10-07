@@ -232,7 +232,8 @@ export const register: Register = on => {
               {d.files.length > MAX_FILES && <Text color={C.gray}>{`… 외 ${d.files.length - MAX_FILES}개`}</Text>}
               <Box>
                 {[['explain', '설명', explain], ['review', '리뷰', review], ['compare', 'HEAD 와 비교', compare]].map(([k, label, ask]) => (
-                  <Box key={`box:ask:${k}`} marginRight={1}>
+                  // a gray block so each reads as a button, like the chips
+                  <Box key={`box:ask:${k}`} marginRight={1} paddingX={1} backgroundColor={C.sel}>
                     <Button key={`ask:${k}`} plain hover={{ color: C.blue }} onPress={() => void say($, (ask as typeof explain)(short))}>
                       {label as string}
                     </Button>
@@ -269,7 +270,7 @@ export const register: Register = on => {
                 ]),
               )}
               {files.length > MAX_FILES && <Text color={C.gray}>{`… 외 ${files.length - MAX_FILES}개`}</Text>}
-              <Box key="box:ask:commit-message">
+              <Box key="box:ask:commit-message" alignSelf="flex-start" paddingX={1} backgroundColor={C.sel}>
                 <Button key="ask:commit-message" plain hover={{ color: C.blue }} onPress={() => void say($, COMMIT_MESSAGE)}>
                   커밋 메시지 정리
                 </Button>
