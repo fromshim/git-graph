@@ -1,0 +1,23 @@
+{
+  "name": "git-graph",
+  "owner": {
+    "name": "fromshim",
+    "url": "https://github.com/fromshim"
+  },
+  "description": "git-graph: Claude Code 터미널 옆 패널에 git 그래프를 실시간으로 그리는 mod",
+  "plugins": [
+    {
+      "name": "git-graph",
+      "source": "./",
+      "displayName": "Git Graph",
+      "description": "Claude Code 터미널 옆 패널에 저장소의 git 그래프를 실시간으로 그린다. 커밋마다 한 줄, 가지는 부모 해시로 계산하고 해시를 누르면 메시지와 바뀐 파일이 열린다.",
+      "author": {
+        "name": "seungboshim",
+        "url": "https://github.com/seungboshim"
+      },
+      "license": "MIT",
+      "category": "developer-tools",
+      "tags": ["git", "graph", "branch", "pane", "hook", "terminal"]
+    }
+  ]
+}
