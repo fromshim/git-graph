@@ -1,10 +1,11 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import { GIT, STATUS, TOP, TRACKS, TREES, show } from '../core/commands.ts'
 import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
 import { track, trees } from '../core/refs.ts'
+import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { parseShow } from '../core/show.ts'
 import { C, chip, personColor } from '../core/theme.ts'
 import type { Seg } from '../core/theme.ts'
@@ -61,6 +62,12 @@ async function toggle($: EngineInterface, hash: string, short: string) {
   await update($, detail, prev => (prev?.hash === hash ? got : prev))
 }
 
+// puts text in the prompt box (never sends it); says so when the box could not take it
+async function say($: EngineInterface, text: string, mode: 'replace' | 'insert' = 'replace') {
+  const r = await $.prompt.fill({ text, mode }).catch(() => undefined)
+  if (!r?.isFilled) $.ui.toast('프롬프트 입력창에 넣지 못했어요')
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'git-graph', description: 'git 그래프 패널 열기/닫기' })
@@ -104,7 +111,20 @@ export const register: Register = on => {
     const shown = await read($, detail)
     const seg = ({ text, ...style }: Seg) => <Text {...style}>{text}</Text>
 
-    const card = (d: GraphDetail) => {
+    // a file line: its columns, the folder dim, the name a button that puts @path in the prompt box
+    const fileLine = (key: string, path: string, cut: number, cols: RenderChildren) => (
+      <Box key={`row:${key}`} overflow="hidden">
+        <Text wrap="truncate-start">
+          {cols}
+          <Text color={C.gray}>{path.slice(0, cut)}</Text>
+        </Text>
+        <Button key={key} plain hover={{ color: C.blue }} onPress={() => void say($, mention(path), 'insert')}>
+          {path.slice(cut)}
+        </Button>
+      </Box>
+    )
+
+    const card = (d: GraphDetail, short: string) => {
       const [title = '', ...rest] = d.body.split('\n')
       const more = rest.join('\n').trim()
       const adds = d.files.reduce((n, f) => n + (Number(f.add) || 0), 0)
@@ -121,18 +141,23 @@ export const register: Register = on => {
                 {`파일 ${d.files.length}개 `}
                 <Text color={C.green}>{`+${adds}`}</Text> <Text color={C.red}>{`−${dels}`}</Text>
               </Text>
-              {d.files.slice(0, MAX_FILES).map(f => {
+              {d.files.slice(0, MAX_FILES).map((f, i) => {
                 const cut = f.path.lastIndexOf('/') + 1
-                return (
-                  <Text wrap="truncate-start">
-                    <Text color={C.green}>{`+${f.add}`.padStart(5)}</Text>
-                    <Text color={C.red}>{` −${f.del}`.padEnd(6)}</Text>
-                    <Text color={C.gray}>{f.path.slice(0, cut)}</Text>
-                    <Text color={C.fg}>{f.path.slice(cut)}</Text>
-                  </Text>
-                )
+                return fileLine(`f:${d.hash}:${i}`, f.path, cut, [
+                  <Text color={C.green}>{`+${f.add}`.padStart(5)}</Text>,
+                  <Text color={C.red}>{` −${f.del}`.padEnd(6)}</Text>,
+                ])
               })}
               {d.files.length > MAX_FILES && <Text color={C.gray}>{`… 외 ${d.files.length - MAX_FILES}개`}</Text>}
+              <Box>
+                {[['explain', '설명', explain], ['review', '리뷰', review], ['compare', 'HEAD 와 비교', compare]].map(([k, label, ask]) => (
+                  <Box key={`box:ask:${k}`} marginRight={1}>
+                    <Button key={`ask:${k}`} plain hover={{ color: C.blue }} onPress={() => void say($, (ask as typeof explain)(short))}>
+                      {label as string}
+                    </Button>
+                  </Box>
+                ))}
+              </Box>
             </Box>
           )}
         </Box>
@@ -212,7 +237,7 @@ export const register: Register = on => {
           ) : (
             <Box flexDirection="column">
               {commit(row, '')}
-              {openHash === row.hash && shown?.hash === row.hash && card(shown)}
+              {openHash === row.hash && shown?.hash === row.hash && card(shown, row.short)}
             </Box>
           ),
         )}

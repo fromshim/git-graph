@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { layout } from '../core/layout.ts'
 import { age, refChips, track, trees } from '../core/refs.ts'
+import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { parseShow } from '../core/show.ts'
 
 const S = '\x1f'
@@ -112,10 +113,10 @@ test('the pane draws rows, the HEAD chip and the uncommitted count; a hash opens
     expect(texts).toContain('root commit')
     await ui.press({ key: 'c:aaaaaaa' })
     const opened = (await ui.findAll({ type: 'Text' })).map(t => t.text)
-    expect(opened).toContain('main.ts')
+    expect(await ui.find({ type: 'Button', text: 'main.ts' })).toBeDefined()
     expect(opened).toContain('why')
     await ui.press({ key: 'c:aaaaaaa' })
-    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).not.toContain('main.ts')
+    expect(await ui.find({ type: 'Button', text: 'main.ts' })).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -180,4 +181,53 @@ test('parseShow splits the message from the numstat rows', () => {
   const d = parseShow('abc1234', 'Title line\n\nbody text\n\x1e\n3\t1\tsrc/a.ts\n-\t-\tlogo.png\n')
   expect(d.body).toBe('Title line\n\nbody text')
   expect(d.files).toEqual([{ add: '3', del: '1', path: 'src/a.ts' }, { add: '-', del: '-', path: 'logo.png' }])
+})
+
+test('prompt texts and @mentions: a rename mentions its new path', () => {
+  expect([explain('abc1234'), review('abc1234'), compare('abc1234')]).toEqual([
+    '커밋 abc1234 을 설명해줘', '커밋 abc1234 을 리뷰해줘', '커밋 abc1234 부터 HEAD 까지 바뀐 점을 정리해줘',
+  ])
+  expect(COMMIT_MESSAGE).toBe('지금 변경을 커밋 메시지로 정리해줘')
+  expect([mention('src/a.ts'), mention('src/{old => new}/a.ts'), mention('a.ts => b.ts'), mention('{ => lib}/a.ts')]).toEqual([
+    '@src/a.ts ', '@src/new/a.ts ', '@b.ts ', '@lib/a.ts ',
+  ])
+})
+
+test('an open card hands the commit to Claude: buttons fill the prompt box, a file inserts @path, a refusal toasts', async ($, on) => {
+  const fills: { text: string; mode: string }[] = []
+  const toasts: string[] = []
+  let isFilled = true
+  on('process.run', async (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'show' ? 'Merge it\n\nwhy\n\x1e\n4\t2\tsrc/app/main.ts\n' : e.argv[1] === 'log' ? LOG : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('prompt.fill', async (_, e) => {
+    fills.push({ text: e.text, mode: e.mode })
+    return { isFilled }
+  })
+  on('ui.toast', async (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  expect(await ui.find({ key: 'ask:review' })).toBeUndefined()
+  await ui.press({ key: 'c:aaaaaaa' })
+  await ui.press({ key: 'ask:explain' })
+  await ui.press({ key: 'ask:review' })
+  await ui.press({ key: 'ask:compare' })
+  await ui.press({ key: 'f:aaaaaaa1:0' })
+  expect(fills).toEqual([
+    { text: '커밋 aaaaaaa 을 설명해줘', mode: 'replace' },
+    { text: '커밋 aaaaaaa 을 리뷰해줘', mode: 'replace' },
+    { text: '커밋 aaaaaaa 부터 HEAD 까지 바뀐 점을 정리해줘', mode: 'replace' },
+    { text: '@src/app/main.ts ', mode: 'insert' },
+  ])
+  expect(toasts).toEqual([])
+  isFilled = false
+  await ui.press({ key: 'ask:review' })
+  expect(toasts).toEqual(['프롬프트 입력창에 넣지 못했어요'])
+  await ui.unmount()
 })
