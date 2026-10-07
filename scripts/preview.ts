@@ -48,6 +48,7 @@ const REFS: GraphRefs = {
   ],
 }
 const CHANGED = 3
+const MINE = new Set([H(1), H(5)]) // commits made in this session: marked ✦
 const OPEN = H(4)
 const CARD = {
   body: ['Merge pull request #12 from feat/export', 'Adds the SVG exporter and a --width flag.'],
@@ -148,9 +149,12 @@ function preview(): string {
   const { rows, lanes } = layout(LOG, NOW, REFS, Infinity)
   const out: string[] = []
   let y = 0
-  // top lines (register.tsx `top`): fold button once lanes > 3, uncommitted count
-  if (lanes > 3) out.push(text(0, y++, '◂ 가지 접기', { opacity: 0.55 }))
-  if (CHANGED > 0) out.push(text(0, y, '◌ ', { fill: C.gray }) + text(2, y++, `커밋 안 한 변경 ${CHANGED}개`, { fill: C.yellow, italic: true }))
+  // top lines (register.tsx `top`): one bar with the fold button (once lanes > 3), 원격 확인 and 경로 강조, then the uncommitted count
+  const bar = [...(lanes > 3 ? ['◂ 가지 접기'] : []), '원격 확인', '경로 강조']
+  let at = 0
+  for (const b of bar) (out.push(text(at, y, b, { opacity: 0.55 })), (at += width(b) + 2))
+  y++
+  if (CHANGED > 0) out.push(text(0, y, '◌ ', { fill: C.yellow }) + text(2, y++, `커밋 안 한 변경 ${CHANGED}개`))
 
   const commit = (r: Row) => {
     const isOpen = r.hash === OPEN
@@ -163,7 +167,7 @@ function preview(): string {
     let col = r.graph.reduce(put, 0)
     const right = W - 20
     const head = r.isHead ? [chip('HEAD', C.blue), ...r.refs] : r.refs
-    const items: Seg[] = [...head.flatMap(s => [s, { text: ' ' }]), { text: r.subject, color: r.isHead ? C.white : C.fg, bold: r.isHead }]
+    const items: Seg[] = [...head.flatMap(s => [s, { text: ' ' }]), ...(MINE.has(r.hash) ? [{ text: '✦ ', color: C.yellow }] : []), { text: r.subject, color: r.isHead ? C.white : C.fg, bold: r.isHead }]
     fit(items, right - col).reduce(put, col)
     // right block (register.tsx): margin 1, author chip, short hash, age
     const author = ` ${r.author.padEnd(AUTHOR_CELLS)} `
@@ -218,6 +222,11 @@ function card(out: string[], y0: number): number {
       const de = ` −${d}`.padEnd(6)
       return text(x, r, ad, { fill: C.green }) + text(x + 5, r, de, { fill: C.red }) + text(x + 11, r, path.slice(0, cut), { fill: C.gray }) + text(x + 11 + cut, r, path.slice(cut))
     })
+  // the hand-to-Claude buttons (register.tsx): 설명, 리뷰, HEAD 와 비교
+  line(r => {
+    let c = x
+    return ['설명', '리뷰', 'HEAD 와 비교'].map(b => text((c += width(b) + 1) - width(b) - 1, r, b)).join('')
+  })
   edge(y++, '╰', '╯')
   out.push(...body)
   return y
