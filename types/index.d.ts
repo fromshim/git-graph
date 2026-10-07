@@ -14,6 +14,7 @@ declare module 'claude-code' {
       detail: GraphDetail | null
       refs: GraphRefs
       wide: boolean
+      mine: string[]
     }
   }
 }

@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import { GIT, STATUS, TOP, TRACKS, TREES, show } from '../core/commands.ts'
+import { GIT, HEAD, STATUS, TOP, TRACKS, TREES, added, show } from '../core/commands.ts'
 import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
+import { addMine } from '../core/mine.ts'
 import { track, trees } from '../core/refs.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { parseShow } from '../core/show.ts'
@@ -19,6 +20,7 @@ const open = atom({ plugin: 'git-graph', key: 'open' } as const, '')
 const detail = atom({ plugin: 'git-graph', key: 'detail' } as const, null)
 const refs = atom({ plugin: 'git-graph', key: 'refs' } as const, { heads: [], tracks: {}, trees: [] })
 const wide = atom({ plugin: 'git-graph', key: 'wide' } as const, false)
+const mine = atom({ plugin: 'git-graph', key: 'mine' } as const, [])
 
 const FOLDED_LANES = 3
 const WIDE = 72
@@ -51,6 +53,11 @@ async function refresh($: EngineInterface) {
   await update($, lines, prev => (prev.join('\n') === got.join('\n') ? prev : got))
 }
 
+async function head($: EngineInterface) {
+  const r = await $.process.run(HEAD).catch(() => undefined)
+  return r?.exitCode === 0 ? r.stdout.trim() : ''
+}
+
 async function toggle($: EngineInterface, hash: string, short: string) {
   let isOpening = false
   await update($, open, prev => ((isOpening = prev !== hash) ? hash : ''))
@@ -79,7 +86,14 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    // a Bash call that moved HEAD made commits: remember them for the marker
+    const before = await head($)
     const ran = await next(e)
+    const after = await head($)
+    if (after && after !== before) {
+      const r = await $.process.run(added(before, after)).catch(() => undefined)
+      if (r?.exitCode === 0) await update($, mine, prev => addMine(prev, r.stdout)).catch(() => {})
+    }
     void refresh($).catch(() => {})
     return ran
   })
@@ -109,6 +123,7 @@ export const register: Register = on => {
     const changed = await read($, dirty)
     const openHash = await read($, open)
     const shown = await read($, detail)
+    const made = new Set(await read($, mine))
     const seg = ({ text, ...style }: Seg) => <Text {...style}>{text}</Text>
 
     // a file line: its columns, the folder dim, the name a button that puts @path in the prompt box
@@ -196,6 +211,7 @@ export const register: Register = on => {
           <Box flexGrow={1} flexShrink={1} overflow="hidden">
             <Text wrap="truncate-end">
               {(row.isHead ? [chip('HEAD', C.blue), ...row.refs] : row.refs).flatMap(s => [seg(s), ' '])}
+              {made.has(row.hash) && <Text color={C.yellow}>✦ </Text>}
               <Text color={row.isHead ? C.white : C.fg} bold={row.isHead}>{row.subject}</Text>
             </Text>
           </Box>

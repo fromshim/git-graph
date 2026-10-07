@@ -3,6 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { layout } from '../core/layout.ts'
 import { age, refChips, track, trees } from '../core/refs.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
+import { MINE_CAP, addMine } from '../core/mine.ts'
 import { parseShow } from '../core/show.ts'
 
 const S = '\x1f'
@@ -230,4 +231,40 @@ test('an open card hands the commit to Claude: buttons fill the prompt box, a fi
   await ui.press({ key: 'ask:review' })
   expect(toasts).toEqual(['프롬프트 입력창에 넣지 못했어요'])
   await ui.unmount()
+})
+
+test('addMine keeps the newest first, drops repeats and stays capped', () => {
+  expect(addMine(['b'], 'a\n\nb\n')).toEqual(['a', 'b'])
+  expect(addMine(['b'], '')).toEqual(['b'])
+  expect(addMine([], Array.from({ length: MINE_CAP + 5 }, (_, i) => `h${i}`).join('\n'))).toHaveLength(MINE_CAP)
+})
+
+test('a Bash call that moves HEAD marks the new commits with ✦; one that does not marks nothing', async ($, on) => {
+  const calls: string[][] = []
+  let heads = ['old', 'aaaaaaa1']
+  on('process.run', async (_, e) => {
+    calls.push([...e.argv])
+    const out = e.argv[2] === 'HEAD' ? (heads.shift() ?? 'aaaaaaa1') : e.argv[1] === 'rev-list' ? 'bbbbbbb2\n' : e.argv[1] === 'log' ? LOG : ''
+    return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('tool.call', async () => ({ result: {} }))
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const marks = async () => {
+    const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+    const n = (await ui.findAll({ type: 'Text', text: '✦' })).filter(t => t.text === '✦ ').length
+    await ui.unmount()
+    return n
+  }
+  expect(await marks()).toBe(0)
+  await $.tool.call({ tool: 'Bash', command: 'git commit -m x' })
+  expect(calls.find(a => a[1] === 'rev-list')).toEqual(['git', 'rev-list', '-n', '50', 'old..aaaaaaa1'])
+  expect(await marks()).toBe(1)
+  // HEAD unchanged: no rev-list
+  heads = ['aaaaaaa1', 'aaaaaaa1']
+  calls.length = 0
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  expect(calls.some(a => a[1] === 'rev-list')).toBe(false)
 })
