@@ -1,6 +1,7 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 import { layout } from '../core/layout.ts'
+import { grown } from '../core/remote.ts'
 import { age, refChips, track, trees } from '../core/refs.ts'
 import { ancestors, dim } from '../core/ancestry.ts'
 import { parseChanges } from '../core/changes.ts'
@@ -352,5 +353,61 @@ test('the 경로 강조 toggle grays rows off the HEAD path, in the top bar and 
   await ui.unmount()
   const down = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: { ...PROPS, scroll: { offset: 5, bodyRows: 3 } }, requestId: 'git-graph' })
   expect(await down.find({ key: 'pin:trace' })).toBeDefined()
+  expect(await down.find({ key: 'pin:remote' })).toBeDefined()
   await down.unmount()
+})
+
+test('grown names the branches that fell further behind, by how much', () => {
+  expect(grown({ main: '↓1', dev: '↑1' }, { main: '↑1 ↓3', dev: '↑1', feat: '↓2' })).toEqual(['main ↓2', 'feat ↓2'])
+  expect(grown({ main: '↓3' }, { main: '↓1' })).toEqual([])
+  expect(grown({}, {})).toEqual([])
+})
+
+test('원격 확인 fetches without prompts, toasts new commits once, one toast per failure streak, and stops when off', async ($, on) => {
+  const clock = mock.clock(on)
+  const toasts: string[] = []
+  const fetches: Record<string, string>[] = []
+  let isDown = false
+  let fetched = false
+  on('process.run', async (_, e) => {
+    if (e.argv[1] === 'fetch') {
+      fetches.push({ ...e.init?.env })
+      fetched = !isDown
+      return { value: { exitCode: isDown ? 128 : 0, stdout: '', stderr: isDown ? 'no network' : '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    const out = e.argv[1] === 'for-each-ref' ? `main\t[behind ${fetched ? 3 : 1}]\n` : e.argv[1] === 'log' ? LOG : ''
+    return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.toast', async (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  expect((await ui.find({ key: 'remote' }))?.text).toBe('원격 확인')
+  await clock.advance(120_000)
+  expect(fetches).toHaveLength(0)
+  await ui.press({ key: 'remote' })
+  expect((await ui.find({ key: 'remote' }))?.text).toBe('원격 확인 끄기')
+  expect(fetches).toEqual([{ GIT_TERMINAL_PROMPT: '0', GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' }])
+  expect(toasts).toEqual(['origin 에 새 커밋: main ↓2'])
+  // nothing grew on the next round: no toast
+  await clock.advance(60_000)
+  expect(fetches).toHaveLength(2)
+  expect(toasts).toHaveLength(1)
+  // a failing fetch: one toast for the whole streak
+  isDown = true
+  await clock.advance(60_000)
+  await clock.advance(60_000)
+  expect(fetches).toHaveLength(4)
+  expect(toasts).toHaveLength(2)
+  expect(toasts[1]).toContain('git fetch')
+  // off: the timer stops
+  await ui.press({ key: 'remote' })
+  await clock.advance(180_000)
+  expect(fetches).toHaveLength(4)
+  await ui.unmount()
 })

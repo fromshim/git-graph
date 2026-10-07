@@ -1,12 +1,13 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderChildren } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
 
-import { DIFF, GIT, HEAD, STATUS, TOP, TRACKS, TREES, added, show } from '../core/commands.ts'
+import { DIFF, FETCH, FETCH_ENV, GIT, HEAD, STATUS, TOP, TRACKS, TREES, added, show } from '../core/commands.ts'
 import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
 import { ancestors, dim } from '../core/ancestry.ts'
 import { NEW, parseChanges } from '../core/changes.ts'
 import { addMine } from '../core/mine.ts'
+import { grown } from '../core/remote.ts'
 import { track, trees } from '../core/refs.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { parseShow } from '../core/show.ts'
@@ -25,6 +26,7 @@ const wide = atom({ plugin: 'git-graph', key: 'wide' } as const, false)
 const isDirtyOpen = atom({ plugin: 'git-graph', key: 'isDirtyOpen' } as const, false)
 const changes = atom({ plugin: 'git-graph', key: 'changes' } as const, null)
 const isTraced = atom({ plugin: 'git-graph', key: 'isTraced' } as const, false)
+const isWatching = atom({ plugin: 'git-graph', key: 'isWatching' } as const, false)
 const mine = atom({ plugin: 'git-graph', key: 'mine' } as const, [])
 
 const FOLDED_LANES = 3
@@ -70,6 +72,46 @@ async function toggleChanges($: EngineInterface) {
   let isOpening = false
   await update($, isDirtyOpen, prev => (isOpening = !prev))
   if (isOpening) await loadChanges($)
+}
+
+const FETCH_EVERY = 60_000
+let watch: Timer | undefined
+let isChecking = false
+let isFetchDown = false
+
+// fetch, refresh, and toast when a local branch fell further behind its upstream; never throws
+async function check($: EngineInterface) {
+  if (isChecking) return
+  isChecking = true
+  try {
+    const before = (await read($, refs)).tracks
+    const r = await $.process.run(FETCH, { env: FETCH_ENV, timeoutMs: 30_000 }).catch(() => undefined)
+    if (r?.exitCode !== 0) {
+      // one toast per failure streak
+      if (!isFetchDown) $.ui.toast('원격을 가져오지 못했어요 (git fetch 실패)')
+      isFetchDown = true
+      return
+    }
+    isFetchDown = false
+    await refresh($)
+    const news = grown(before, (await read($, refs)).tracks)
+    if (news.length > 0) $.ui.toast(`origin 에 새 커밋: ${news.join(', ')}`)
+  } catch {
+    // a failed check must not reach the pane
+  } finally {
+    isChecking = false
+  }
+}
+
+async function toggleWatch($: EngineInterface) {
+  let isOn = false
+  await update($, isWatching, prev => (isOn = !prev))
+  watch?.cancel()
+  watch = undefined
+  if (!isOn) return
+  isFetchDown = false
+  watch = $.clock.every(FETCH_EVERY, () => void check($))
+  void check($)
 }
 
 async function head($: EngineInterface) {
@@ -144,6 +186,7 @@ export const register: Register = on => {
     const shown = await read($, detail)
     const isChangesOpen = await read($, isDirtyOpen)
     const files = await read($, changes)
+    const isWatch = await read($, isWatching)
     const isOn = await read($, isTraced)
     const kin = isOn ? ancestors(await read($, lines)) : null
     const made = new Set(await read($, mine))
@@ -248,6 +291,11 @@ export const register: Register = on => {
             </Button>
           </Box>
         )}
+        <Box key={`${pin}remote-bar`} marginRight={2}>
+          <Button key={`${pin}remote`} plain dimColor={!isWatch} hover={{ color: C.blue }} onPress={() => void toggleWatch($).catch(() => {})}>
+            {isWatch ? '원격 확인 끄기' : '원격 확인'}
+          </Button>
+        </Box>
         <Box key={`${pin}trace-bar`}>
           <Button key={`${pin}trace`} plain dimColor={!isOn} hover={{ color: C.blue }} onPress={() => void update($, isTraced, v => !v)}>
             {isOn ? '경로 강조 끄기' : '경로 강조'}

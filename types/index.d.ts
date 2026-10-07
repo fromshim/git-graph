@@ -15,6 +15,7 @@ declare module 'claude-code' {
       refs: GraphRefs
       wide: boolean
       mine: string[]
+      isWatching: boolean
       isTraced: boolean
       isDirtyOpen: boolean
       changes: GraphFile[] | null
