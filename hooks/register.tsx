@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import { GIT, HEAD, STATUS, TOP, TRACKS, TREES, added, show } from '../core/commands.ts'
+import { DIFF, GIT, HEAD, STATUS, TOP, TRACKS, TREES, added, show } from '../core/commands.ts'
 import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
+import { NEW, parseChanges } from '../core/changes.ts'
 import { addMine } from '../core/mine.ts'
 import { track, trees } from '../core/refs.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
@@ -20,6 +21,8 @@ const open = atom({ plugin: 'git-graph', key: 'open' } as const, '')
 const detail = atom({ plugin: 'git-graph', key: 'detail' } as const, null)
 const refs = atom({ plugin: 'git-graph', key: 'refs' } as const, { heads: [], tracks: {}, trees: [] })
 const wide = atom({ plugin: 'git-graph', key: 'wide' } as const, false)
+const isDirtyOpen = atom({ plugin: 'git-graph', key: 'isDirtyOpen' } as const, false)
+const changes = atom({ plugin: 'git-graph', key: 'changes' } as const, null)
 const mine = atom({ plugin: 'git-graph', key: 'mine' } as const, [])
 
 const FOLDED_LANES = 3
@@ -50,7 +53,21 @@ async function refresh($: EngineInterface) {
   // ponytail: skip writes when nothing moved, so the pane redraws only on change
   await update($, note, prev => (prev === msg ? prev : msg))
   await update($, dirty, prev => (prev === changed ? prev : changed))
+  if (changed > 0 && (await read($, isDirtyOpen))) await loadChanges($)
   await update($, lines, prev => (prev.join('\n') === got.join('\n') ? prev : got))
+}
+
+// the uncommitted files: tracked ones from the diff against HEAD, untracked ones from status
+async function loadChanges($: EngineInterface) {
+  const [d, st] = await Promise.all([DIFF, STATUS].map(argv => $.process.run(argv).catch(() => undefined)))
+  const got = parseChanges(d?.exitCode === 0 ? d.stdout : '', st?.exitCode === 0 ? st.stdout : '')
+  await update($, changes, prev => (JSON.stringify(prev) === JSON.stringify(got) ? prev : got))
+}
+
+async function toggleChanges($: EngineInterface) {
+  let isOpening = false
+  await update($, isDirtyOpen, prev => (isOpening = !prev))
+  if (isOpening) await loadChanges($)
 }
 
 async function head($: EngineInterface) {
@@ -123,6 +140,8 @@ export const register: Register = on => {
     const changed = await read($, dirty)
     const openHash = await read($, open)
     const shown = await read($, detail)
+    const isChangesOpen = await read($, isDirtyOpen)
+    const files = await read($, changes)
     const made = new Set(await read($, mine))
     const seg = ({ text, ...style }: Seg) => <Text {...style}>{text}</Text>
 
@@ -179,6 +198,41 @@ export const register: Register = on => {
       )
     }
 
+    const changesCard = () => {
+      const adds = (files ?? []).reduce((n, f) => n + (Number(f.add) || 0), 0)
+      const dels = (files ?? []).reduce((n, f) => n + (Number(f.del) || 0), 0)
+      return (
+        <Box flexDirection="column" marginLeft={2} borderStyle="round" borderColor={C.sel} paddingX={1}>
+          {files === null ? (
+            <Text color={C.gray}>불러오는 중…</Text>
+          ) : (
+            <Box flexDirection="column">
+              <Text color={C.gray}>
+                {`파일 ${files.length}개 `}
+                <Text color={C.green}>{`+${adds}`}</Text> <Text color={C.red}>{`−${dels}`}</Text>
+              </Text>
+              {files.slice(0, MAX_FILES).map((f, i) =>
+                fileLine(`d:${i}`, f.path, f.path.lastIndexOf('/') + 1, [
+                  f.add === NEW ? (
+                    <Text color={C.cyan}>{'new'.padStart(5)}</Text>
+                  ) : (
+                    <Text color={C.green}>{`+${f.add}`.padStart(5)}</Text>
+                  ),
+                  <Text color={C.red}>{f.add === NEW ? ''.padEnd(6) : ` −${f.del}`.padEnd(6)}</Text>,
+                ]),
+              )}
+              {files.length > MAX_FILES && <Text color={C.gray}>{`… 외 ${files.length - MAX_FILES}개`}</Text>}
+              <Box key="box:ask:commit-message">
+                <Button key="ask:commit-message" plain hover={{ color: C.blue }} onPress={() => void say($, COMMIT_MESSAGE)}>
+                  커밋 메시지 정리
+                </Button>
+              </Box>
+            </Box>
+          )}
+        </Box>
+      )
+    }
+
     // the top lines (fold button, uncommitted count), and the HEAD row once it scrolled out
     const top = (pin: string) => [
       lanes > FOLDED_LANES && (
@@ -190,11 +244,15 @@ export const register: Register = on => {
         </Box>
       ),
       changed > 0 && (
-        <Text>
-          <Text color={C.gray}>◌ </Text>
-          <Text italic color={C.yellow}>커밋 안 한 변경 {changed}개</Text>
-        </Text>
+        <Box key={`${pin}dirty-bar`}>
+          <Text color={C.yellow}>◌ </Text>
+          <Button key={`${pin}dirty`} plain hover={{ color: C.blue }} onPress={() => void toggleChanges($).catch(() => {})}>
+            {`커밋 안 한 변경 ${changed}개`}
+          </Button>
+        </Box>
       ),
+      // the card sits in place only: the pinned copy is just the lines
+      !pin && changed > 0 && isChangesOpen && changesCard(),
     ]
 
     const commit = (row: Row, pin: string) => {

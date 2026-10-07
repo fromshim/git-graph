@@ -15,6 +15,8 @@ declare module 'claude-code' {
       refs: GraphRefs
       wide: boolean
       mine: string[]
+      isDirtyOpen: boolean
+      changes: GraphFile[] | null
     }
   }
 }

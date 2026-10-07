@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { layout } from '../core/layout.ts'
 import { age, refChips, track, trees } from '../core/refs.ts'
+import { parseChanges } from '../core/changes.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { MINE_CAP, addMine } from '../core/mine.ts'
 import { parseShow } from '../core/show.ts'
@@ -109,7 +110,8 @@ test('the pane draws rows, the HEAD chip and the uncommitted count; a hash opens
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: PROPS, requestId: 'git-graph' })
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
-    expect(texts).toContain('커밋 안 한 변경 2개')
+    expect(await ui.find({ key: 'dirty' })).toBeDefined()
+    expect((await ui.find({ key: 'dirty' }))?.text).toBe('커밋 안 한 변경 2개')
     expect(texts).toContain(' HEAD ')
     expect(texts).toContain('root commit')
     await ui.press({ key: 'c:aaaaaaa' })
@@ -267,4 +269,45 @@ test('a Bash call that moves HEAD marks the new commits with ✦; one that does 
   calls.length = 0
   await $.tool.call({ tool: 'Bash', command: 'ls' })
   expect(calls.some(a => a[1] === 'rev-list')).toBe(false)
+})
+
+test('parseChanges lists tracked counts, then untracked files as new', () => {
+  expect(parseChanges('3\t1\tsrc/a.ts\n-\t-\tlogo.png\n', ' M src/a.ts\n?? b.txt\n?? "c d.txt"\nA  x\n')).toEqual([
+    { add: '3', del: '1', path: 'src/a.ts' },
+    { add: '-', del: '-', path: 'logo.png' },
+    { add: 'new', del: '', path: 'b.txt' },
+    { add: 'new', del: '', path: 'c d.txt' },
+  ])
+  expect(parseChanges('', '')).toEqual([])
+})
+
+test('the uncommitted line opens a card of changed files; a file inserts @path, the button asks for a message', async ($, on) => {
+  const fills: { text: string; mode: string }[] = []
+  on('process.run', async (_, e) => ({
+    value: {
+      exitCode: 0,
+      stdout: e.argv[1] === 'status' ? ' M src/a.ts\n?? b.txt\n' : e.argv[1] === 'diff' ? '3\t1\tsrc/a.ts\n' : e.argv[1] === 'log' ? LOG : '',
+      stderr: '', isStdoutTruncated: false, isStderrTruncated: false,
+    },
+  }))
+  on('prompt.fill', async (_, e) => {
+    fills.push({ text: e.text, mode: e.mode })
+    return { isFilled: true }
+  })
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  expect(await ui.find({ key: 'ask:commit-message' })).toBeUndefined()
+  await ui.press({ key: 'dirty' })
+  expect((await ui.find({ key: 'd:0' }))?.text).toBe('a.ts')
+  expect((await ui.find({ key: 'd:1' }))?.text).toBe('b.txt')
+  expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('  new')
+  await ui.press({ key: 'd:0' })
+  await ui.press({ key: 'ask:commit-message' })
+  expect(fills).toEqual([{ text: '@src/a.ts ', mode: 'insert' }, { text: '지금 변경을 커밋 메시지로 정리해줘', mode: 'replace' }])
+  await ui.press({ key: 'dirty' })
+  expect(await ui.find({ key: 'd:0' })).toBeUndefined()
+  await ui.unmount()
 })
