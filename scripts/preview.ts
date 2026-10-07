@@ -225,7 +225,12 @@ function card(out: string[], y0: number): number {
   // the hand-to-Claude buttons (register.tsx): 설명, 리뷰, HEAD 와 비교
   line(r => {
     let c = x
-    return ['설명', '리뷰', 'HEAD 와 비교'].map(b => text((c += width(b) + 1) - width(b) - 1, r, b)).join('')
+    // each on a C.sel block with one cell of padding, one cell apart
+    return ['설명', '리뷰', 'HEAD 와 비교'].map(b => {
+      const at = c
+      c += width(b) + 3
+      return rect(at, r, width(b) + 2, C.sel) + text(at + 1, r, b)
+    }).join('')
   })
   edge(y++, '╰', '╯')
   out.push(...body)
