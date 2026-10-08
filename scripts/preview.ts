@@ -43,8 +43,8 @@ const REFS: GraphRefs = {
   heads: ['main', 'feat/search', 'fix/login', 'feat/export'],
   tracks: { 'feat/search': track('[ahead 2, behind 1]'), 'fix/login': track('[ahead 1]') },
   trees: [
-    { name: 'app', head: 'f'.repeat(40), isSelf: true },
-    { name: 'hotfix', head: H(2), isSelf: false },
+    { name: 'app', path: '/work/app', head: H(1), branch: 'feat/search', isSelf: true },
+    { name: 'hotfix', path: '/work/hotfix', head: H(2), branch: 'fix/login', isSelf: false },
   ],
 }
 const CHANGED = 3
@@ -149,8 +149,8 @@ function preview(): string {
   const { rows, lanes } = layout(LOG, NOW, REFS, Infinity)
   const out: string[] = []
   let y = 0
-  // top lines (register.tsx `top`): one bar with the fold button (once lanes > 3), 원격 확인 and 경로 강조, then the uncommitted count
-  const bar = [...(lanes > 3 ? ['◂ 가지 접기'] : []), '원격 확인', '경로 강조']
+  // top lines (register.tsx `top`): one bar with the fold button (once lanes > 3), 원격 확인, 경로 강조 and ⑂ 워크트리 N개, then the uncommitted count
+  const bar = [...(lanes > 3 ? ['◂ 가지 접기'] : []), '원격 확인', '경로 강조', `⑂ 워크트리 ${REFS.trees.length}개`]
   let at = 0
   for (const b of bar) (out.push(text(at, y, b, { opacity: 0.55 })), (at += width(b) + 2))
   y++
@@ -239,11 +239,12 @@ function card(out: string[], y0: number): number {
 
 // ---- chip legend ----
 const LEGEND: Record<'ko' | 'en', string[]> = {
-  ko: ['현재 체크아웃한 커밋', '로컬 브랜치', 'origin 과 같은 커밋', 'origin 보다 앞서거나 뒤처진 커밋 수', '원격 브랜치', '태그', '워크트리 (둘 이상일 때만)'],
-  en: ['checked-out commit', 'local branch', 'same commit as origin', 'commits ahead of / behind origin', 'remote branch', 'tag', 'worktree (only when there are several)'],
+  ko: ['현재 체크아웃한 커밋', '로컬 브랜치', 'origin 과 같은 커밋', 'origin 보다 앞서거나 뒤처진 커밋 수', '원격 브랜치', '태그', '워크트리 (둘 이상일 때만)', '이 세션의 워크트리', '한 커밋에 넷 이상이면 묶어서'],
+  en: ['checked-out commit', 'local branch', 'same commit as origin', 'commits ahead of / behind origin', 'remote branch', 'tag', 'worktree (only when there are several)', 'this session\'s worktree', 'four or more on one commit, grouped'],
 }
 function legend(lang: 'ko' | 'en'): string {
   const one = (decor: string, known: GraphRefs, hash = '') => refChips(decor, hash, known).chips
+  const tree = (name: string, head: string, isSelf: boolean) => ({ name, path: `/work/${name}`, head, branch: '', isSelf })
   const none: GraphRefs = { heads: ['name'], tracks: {}, trees: [] }
   const chips: Seg[][] = [
     [{ text: '●', color: C.blue }, chip('HEAD', C.blue)],
@@ -252,7 +253,9 @@ function legend(lang: 'ko' | 'en'): string {
     one('name', { ...none, tracks: { name: track('[ahead 2, behind 1]') } }),
     one('origin/name', none),
     one('tag: name', none),
-    one('', { ...none, trees: [{ name: 'name', head: 'h', isSelf: false }, { name: 'other', head: 'x', isSelf: false }] }, 'h'),
+    one('', { ...none, trees: [tree('name', 'h', false), tree('other', 'x', false)] }, 'h'),
+    one('', { ...none, trees: [tree('name', 'h', true), tree('other', 'x', false)] }, 'h'),
+    one('', { ...none, trees: [tree('a', 'h', false), tree('b', 'h', false), tree('c', 'h', false), tree('d', 'h', false), tree('e', 'h', false)] }, 'h'),
   ]
   const out: string[] = []
   chips.forEach((cs, i) => {
