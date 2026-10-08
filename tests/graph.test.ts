@@ -8,6 +8,7 @@ import { parseChanges } from '../core/changes.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { MINE_CAP, addMine, moved } from '../core/mine.ts'
 import { parseShow } from '../core/show.ts'
+import { C } from '../core/theme.ts'
 
 const S = '\x1f'
 const NOW = 1_800_000_000_000
@@ -39,6 +40,9 @@ test('upstream tracking and worktrees become chips', () => {
   expect(list).toEqual([{ name: 'main', path: '/r/main', head: 'aaa', isSelf: false }, { name: 'wt-a', path: '/r/wt-a', head: 'bbb', isSelf: true }])
   const known = { heads: ['feat', 'docs/x'], tracks: { feat: '↑2' }, trees: list }
   expect(refChips('feat', 'bbb', known).chips.map(c => c.text)).toEqual([' ⑂ wt-a ', ' ⎇ feat ↑2 '])
+  // this session's own worktree is blue, the others purple
+  const bg = (hash: string) => refChips('', hash, known).chips.map(c => c.backgroundColor)
+  expect([bg('bbb'), bg('aaa')]).toEqual([[C.blue], [C.purple]])
   // a slash does not make a branch remote: the local heads decide
   expect(refChips('docs/x, upstream/y', '', known).chips.map(c => c.text)).toEqual([' ⎇ docs/x ', ' ⌂ upstream/y '])
   // one worktree alone is just the repo: no chip

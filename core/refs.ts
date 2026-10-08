@@ -5,7 +5,7 @@ import type { Seg } from './theme.ts'
 export const NO_REFS: GraphRefs = { heads: [], tracks: {}, trees: [] }
 
 // local ⎇ (= when origin points at the same commit, ↑↓ when it does not), remote ⌂, tag #,
-// worktree ⑂ (only once there is more than one)
+// worktree ⑂ (only once there is more than one; this session's own in blue)
 export function refChips(decor: string, hash = '', known: GraphRefs = NO_REFS): { chips: Seg[]; isHead: boolean } {
   const list = decor ? decor.split(', ') : []
   const isHead = list.some(r => r === 'HEAD' || r.startsWith('HEAD -> '))
@@ -14,7 +14,7 @@ export function refChips(decor: string, hash = '', known: GraphRefs = NO_REFS): 
   const isLocal = (r: string) => (known.heads.length > 0 ? known.heads.includes(r) : !r.startsWith('origin/'))
   const locals = new Set(names.filter(r => !r.startsWith('tag: ') && isLocal(r)))
   const trees = known.trees.length > 1 ? known.trees.filter(t => t.head === hash) : []
-  const chips: Seg[] = trees.map(t => chip(`⑂ ${t.name}`, C.purple))
+  const chips: Seg[] = trees.map(t => chip(`⑂ ${t.name}`, t.isSelf ? C.blue : C.purple))
   for (const r of names) {
     if (r.startsWith('tag: ')) chips.push(chip(`# ${r.slice(5)}`, C.orange))
     else if (r.startsWith('origin/') && locals.has(r.slice(7))) continue
