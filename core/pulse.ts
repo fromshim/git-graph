@@ -1,18 +1,18 @@
-import { C } from './theme.ts'
+import { C, mix, rgb } from './theme.ts'
 import type { Seg } from './theme.ts'
 
 export const DOT = '●'
-export const PULSE_STEPS = 15
-export const PULSE_MS = 80
+// one cycle is 48 frames x 50ms = 2.4s
+export const PULSE_STEPS = 48
+export const PULSE_MS = 50
+// how far the dimmest frame leans toward the row band: a glow that never switches off
+export const TROUGH = 0.4
 
-const rgb = (hex: string) => parseInt(hex.slice(1), 16)
-const mix = (a: number, b: number, t: number) =>
-  [16, 8, 0].reduce((out, shift) => out | (Math.round(((a >> shift) & 255) * (1 - t) + ((b >> shift) & 255) * t) << shift), 0)
-
-// one breath: blue fades toward the HEAD row's band and back, as 0x00RRGGBB per step (smooth cosine, starts dim)
+// one glow: bright yellow eases (sine in and out) down to a partial fade toward the HEAD row's band and back,
+// as 0x00RRGGBB per step, starting at the trough
 export function breath(steps = PULSE_STEPS, bg = C.sel): number[] {
-  const dim = mix(rgb(C.blue), rgb(bg), 0.7)
-  return Array.from({ length: steps }, (_, i) => mix(dim, rgb(C.blue), (1 - Math.cos((2 * Math.PI * i) / steps)) / 2))
+  const dim = mix(rgb(C.glow), rgb(bg), TROUGH)
+  return Array.from({ length: steps }, (_, i) => mix(dim, rgb(C.glow), (1 - Math.cos((2 * Math.PI * i) / steps)) / 2))
 }
 
 // a 1x1 Raster's `cells`: one ● as little-endian u32 [codePoint, foreground, background], base64

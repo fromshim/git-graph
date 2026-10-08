@@ -8,7 +8,7 @@ import { parseChanges } from '../core/changes.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { MINE_CAP, addMine, moved } from '../core/mine.ts'
 import { parseShow } from '../core/show.ts'
-import { C } from '../core/theme.ts'
+import { C, tint } from '../core/theme.ts'
 import { breath, dotCells, splitDot } from '../core/pulse.ts'
 
 const S = '\x1f'
@@ -41,9 +41,9 @@ test('upstream tracking and worktrees become chips', () => {
   expect(list).toEqual([{ name: 'main', path: '/r/main', head: 'aaa', branch: 'main', isSelf: false }, { name: 'wt-a', path: '/r/wt-a', head: 'bbb', branch: '', isSelf: true }])
   const known = { heads: ['feat', 'docs/x'], tracks: { feat: '↑2' }, trees: list }
   expect(refChips('feat', 'bbb', known).chips.map(c => c.text)).toEqual([' ⑂ wt-a ', ' ⎇ feat ↑2 '])
-  // this session's own worktree is blue, the others purple
+  // this session's own worktree is the yellow glow, the others purple
   const bg = (hash: string) => refChips('', hash, known).chips.map(c => c.backgroundColor)
-  expect([bg('bbb'), bg('aaa')]).toEqual([[C.blue], [C.purple]])
+  expect([bg('bbb'), bg('aaa')]).toEqual([[C.glow], [C.purple]])
   // past three worktrees on one commit: the self one, then one ×N chip
   const many = (n: number, self: number) =>
     ({ heads: [], tracks: {}, trees: Array.from({ length: n }, (_, i) => ({ name: `w${i}`, path: `/r/w${i}`, head: 'ccc', branch: '', isSelf: i === self })) })
@@ -68,6 +68,17 @@ test('pointers list what is on one commit: branches with their origin state, rem
     trees: known.trees,
   })
   expect(pointers('', 'zzz', known).trees).toEqual([])
+})
+
+test('tint mixes a color a little into the pane background, so a light label stays readable on it', () => {
+  expect(tint(C.green)).toBe('#475647')
+  expect(tint(C.green, 0)).toBe(C.bg)
+  expect(tint(C.green, 1)).toBe(C.green)
+  // every chip color stays dark: a light label keeps its contrast (sum of channels well under half of white's)
+  for (const c of [C.green, C.red, C.orange, C.purple, C.glow, C.gray]) {
+    const n = parseInt(tint(c).slice(1), 16)
+    expect((n >> 16) + ((n >> 8) & 255) + (n & 255)).toBeLessThan(330)
+  }
 })
 
 test('layout draws one row per commit, bending forks and merges inside the row; HEAD is the one dot', () => {
@@ -197,10 +208,15 @@ test('scrolled down, the top lines and HEAD stay pinned over a ┊ gap', async (
   await down.unmount()
 })
 
-test('the card lists what points at the commit; the ⑂ 워크트리 button opens a list with each worktree and its change count', async ($, on) => {
+test('a ref chip is a tinted button: it opens a list under its row (one at a time) with each ref and worktree; the commit card no longer lists them', async ($, on) => {
+  const clock = mock.clock(on)
+  const statusCalls: string[] = []
   const out = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
   on('process.run', async (_, e) => {
-    if (e.argv[1] === '-C') return e.argv[2] === '/repo' ? out(' M a\n?? b\n') : out('', 128)
+    if (e.argv[1] === '-C') {
+      statusCalls.push(String(e.argv[2]))
+      return e.argv[2] === '/repo' ? out(' M a\n?? b\n') : out('', 128)
+    }
     if (e.argv[1] === 'worktree') return out('worktree /repo\nHEAD aaaaaaa1\nbranch refs/heads/main\n\nworktree /repo/.wt/x\nHEAD bbbbbbb2\ndetached\n')
     if (e.argv[1] === 'rev-parse') return out('/repo\n')
     if (e.argv[1] === 'for-each-ref') return out('main\t\n')
@@ -213,27 +229,48 @@ test('the card lists what points at the commit; the ⑂ 워크트리 button open
   on('session.start', async (_, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   for (const surface of ['terminal', 'desktop'] as const) {
+    statusCalls.length = 0
     const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: PROPS, requestId: 'git-graph' })
     const shown = async () => (await ui.findAll({ type: 'Text' })).map(t => t.text)
-    // the card: branch with origin state, tag, and the worktree on it, marked as this session's
+    // no worktree toggle in the top bar any more
+    expect(await ui.find({ key: 'trees' })).toBeUndefined()
+    // the chips: this session's worktree, the branch with origin state, the tag; each on a tinted Box
+    expect((await ui.find({ key: 'r:aaaaaaa:0' }))?.text).toBe('⑂ repo')
+    expect((await ui.find({ key: 'r:aaaaaaa:1' }))?.text).toBe('⎇ main =')
+    expect((await ui.find({ key: 'r:aaaaaaa:2' }))?.text).toBe('# v1')
+    expect((await ui.find({ key: 'box:r:aaaaaaa:1' }))?.props.backgroundColor).toBe(tint(C.green))
+    expect((await ui.find({ key: 'box:r:aaaaaaa:0' }))?.props.backgroundColor).toBe(tint(C.glow))
+    expect(await ui.find({ key: 'ref-card:aaaaaaa1' })).toBeUndefined()
+    // the HEAD chip stays a filled Text, not a button
+    expect(await shown()).toContain(' HEAD ')
+    // the commit card has no pointer section now
     await ui.press({ key: 'c:aaaaaaa' })
-    expect(await shown()).toEqual(expect.arrayContaining(['⎇ main', '  = origin', '# v1', '⑂ repo', '  /repo', '  이 세션']))
+    expect(await ui.find({ key: 'ref:b:main' })).toBeUndefined()
+    expect(await shown()).not.toContain('  = origin')
     await ui.press({ key: 'c:aaaaaaa' })
-    // the list
-    expect((await ui.find({ key: 'trees' }))?.text).toBe('⑂ 워크트리 2개')
-    expect(await ui.find({ key: 'tree:/repo' })).toBeUndefined()
-    await ui.press({ key: 'trees' })
-    expect(await ui.find({ key: 'tree:/repo' })).toBeDefined()
-    expect(await shown()).toEqual(expect.arrayContaining(['  /repo/.wt/x', '  bbbbbbb (detached)', '  변경 2개', '  변경 ?', '  ⎇ main']))
-    await ui.press({ key: 'trees' })
-    expect(await ui.find({ key: 'tree:/repo' })).toBeUndefined()
+    // a chip press opens the list: branch with origin state, tag, the worktree on it marked as this session's
+    await ui.press({ key: 'r:aaaaaaa:1' })
+    expect(await ui.find({ key: 'ref-card:aaaaaaa1' })).toBeDefined()
+    expect(await shown()).toEqual(expect.arrayContaining(['⎇ main', '  = origin', '# v1', '⑂ repo', '  ⎇ main', '  /repo', '  이 세션', '  변경 2개']))
+    expect((await ui.findAll({ type: 'Text', text: '이 세션' })).find(t => t.text === '  이 세션')?.props.color).toBe(C.glow)
+    // another row's chip moves it
+    await ui.press({ key: 'r:bbbbbbb:0' })
+    expect(await ui.find({ key: 'ref-card:aaaaaaa1' })).toBeUndefined()
+    expect(await shown()).toEqual(expect.arrayContaining(['⑂ x', '  bbbbbbb (detached)', '  /repo/.wt/x', '  변경 ?']))
+    // while open it follows the 5s refresh
+    const before = statusCalls.length
+    await clock.advance(5000)
+    expect(statusCalls.length).toBeGreaterThan(before)
+    // the same chip again closes it
+    await ui.press({ key: 'r:bbbbbbb:0' })
+    expect(await ui.find({ key: 'ref-card:bbbbbbb2' })).toBeUndefined()
     await ui.unmount()
   }
-  // scrolled: the pinned copy has the button, and the list stays in the main pane only
+  // scrolled: the pinned HEAD row has its own chip buttons, and the list stays in the main pane only
   const down = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: { ...PROPS, scroll: { offset: 5, bodyRows: 3 } }, requestId: 'git-graph' })
-  await down.press({ key: 'pin:trees' })
-  expect((await down.findAll({ key: 'tree:/repo' })).length).toBe(1)
-  await down.press({ key: 'trees' })
+  await down.press({ key: 'pin:r:aaaaaaa:1' })
+  expect((await down.findAll({ key: 'ref-card:aaaaaaa1' })).length).toBe(1)
+  await down.press({ key: 'r:aaaaaaa:1' })
   await down.unmount()
 })
 
@@ -443,8 +480,12 @@ test('the 경로 강조 toggle grays rows off the HEAD path, in the top bar and 
     const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: PROPS, requestId: 'git-graph' })
     expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조')
     expect(await color(ui, 'off the path')).toBe('#abb2bf')
+    expect((await ui.find({ key: 'box:r:xxxxxxx:0' }))?.props.backgroundColor).toBe(tint(C.green))
     await ui.press({ key: 'trace' })
     expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조 끄기')
+    // an off-path chip goes to a gray tint, an on-path one keeps its own
+    expect((await ui.find({ key: 'box:r:xxxxxxx:0' }))?.props.backgroundColor).toBe(tint(C.gray))
+    expect((await ui.find({ key: 'box:r:hhhhhhh:0' }))?.props.backgroundColor).toBe(tint(C.green))
     expect(await color(ui, 'off the path')).toBe('#5c6370')
     expect(await color(ui, 'on the path')).not.toBe('#5c6370')
     expect(await color(ui, 'root')).not.toBe('#5c6370')
@@ -513,14 +554,21 @@ test('원격 확인 fetches without prompts, toasts new commits once, one toast 
   await ui.unmount()
 })
 
-test('the HEAD pulse: frames breathe between blue and a dim blue, encode as one ● cell, and the dot splits out of a graph row', () => {
-  const fgs = breath(15)
-  expect(fgs).toHaveLength(15)
+test('the HEAD pulse: 48 frames glow between bright yellow and a partial fade, encode as one ● cell, and the dot splits out of a graph row', () => {
+  const fgs = breath()
+  expect(fgs).toHaveLength(48)
+  // starts at the trough, peaks mid-cycle at the full glow, never goes past it
   expect(fgs[0]).toBe(Math.min(...fgs))
-  expect(Math.max(...fgs)).toBeLessThanOrEqual(0x61afef)
-  expect(new Set(fgs).size).toBe(8)
-  // the dimmest step sits closer to the band than the blue is
-  expect((fgs[0] ?? 0) & 255).toBeLessThan(0xef)
+  expect(fgs[24]).toBe(0xffd866)
+  expect(Math.max(...fgs)).toBe(0xffd866)
+  // it never switches off: even the trough keeps most of the yellow (red channel >= 0xb0) and stays warm (red over blue)
+  expect((fgs[0] ?? 0) >> 16).toBeGreaterThanOrEqual(0xb0)
+  expect(((fgs[0] ?? 0) >> 16) - ((fgs[0] ?? 0) & 255)).toBeGreaterThan(0x40)
+  // sine ease: it moves least beside the trough and the peak, most halfway between
+  const lum = (n: number) => (n >> 16) + ((n >> 8) & 255) + (n & 255)
+  const steps = fgs.map((f, i) => Math.abs(lum(fgs[(i + 1) % 48] ?? 0) - lum(f)))
+  expect(steps[0]).toBeLessThan((steps[11] ?? 0) / 4)
+  expect(steps[23]).toBeLessThan((steps[11] ?? 0) / 4)
   // 0x25cf, 0x61afef, 0x3e4451 as little-endian u32, base64
   expect(dotCells(0x61afef)).toBe('zyUAAO+vYQBRRD4A')
   const red = { text: '●─', color: '#f00' }
@@ -532,7 +580,7 @@ test('the HEAD pulse: frames breathe between blue and a dim blue, encode as one 
   expect(splitDot([{ text: '┿ ' }])).toBeNull()
 })
 
-test('HEAD pulses as a Raster on the terminal and stays a plain ● elsewhere; a timer blits frames until blit is denied', async ($, on) => {
+test('HEAD pulses as a Raster on the terminal and stays a still yellow ● elsewhere; a timer blits frames until blit is denied', async ($, on) => {
   const clock = mock.clock(on)
   const blits: { requestId: string; key: string; cells?: string }[] = []
   let isMounted = true
@@ -550,7 +598,7 @@ test('HEAD pulses as a Raster on the terminal and stays a plain ● elsewhere; a
   // desktop: no Raster, the ● stays in the graph text
   const flat = await $.ui.mount({ plugin: 'git-graph', surface: 'desktop', component: 'Pane', props: PROPS, requestId: 'git-graph' })
   expect(await flat.find({ type: 'Raster' })).toBeUndefined()
-  expect(await flat.find({ type: 'Text', text: '●' })).toBeDefined()
+  expect((await flat.find({ type: 'Text', text: '●' }))?.props.color).toBe(C.glow)
   await flat.unmount()
   await clock.advance(1000)
   expect(blits).toHaveLength(0)
@@ -562,16 +610,82 @@ test('HEAD pulses as a Raster on the terminal and stays a plain ● elsewhere; a
   // a second drawing starts no second timer
   await ui.press({ key: 'trace' })
   await ui.press({ key: 'trace' })
-  await clock.advance(80 * 15)
-  expect(blits).toHaveLength(15)
+  await clock.advance(50 * 48)
+  expect(blits).toHaveLength(48)
   expect(blits.every(b => b.requestId === 'git-graph' && b.key === 'pulse')).toBe(true)
-  expect(new Set(blits.map(b => b.cells)).size).toBe(8)
+  expect(new Set(blits.map(b => b.cells)).size).toBe(new Set(breath()).size)
   // denied: it gives up after a few misses and blits no more
   isMounted = false
-  await clock.advance(80 * 10)
+  await clock.advance(50 * 10)
   const stopped = blits.length
-  expect(stopped).toBe(15 + 5)
-  await clock.advance(80 * 10)
+  expect(stopped).toBe(48 + 5)
+  await clock.advance(50 * 10)
   expect(blits).toHaveLength(stopped)
   await ui.unmount()
+})
+
+const PANES = [{ id: 'git-graph', title: 'Git graph', isShown: true, isFocused: false, isPlaced: true }]
+
+test('a drawing that throws shows the error in the pane and toasts it once per message, on terminal and desktop', async ($, on) => {
+  const toasts: string[] = []
+  on('process.run', async (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'log' ? LOG : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  // a Button that cannot be made: the drawing throws
+  on('ui.resolve', async (_, e, next) => {
+    const els = await next(e)
+    return { ...els, Button: () => { throw new TypeError('no button') } } as never
+  })
+  on('ui.toast', async (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: PROPS, requestId: 'git-graph' })
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(texts).toEqual(['git-graph 를 그리지 못했어요', `HooksError: no button (${surface})`])
+    await ui.unmount()
+  }
+  // the same message toasts once, even across two drawings
+  expect(toasts).toEqual(['git-graph 를 그리지 못했어요: HooksError: no button (terminal)'])
+})
+
+test('no drawing request within 5s toasts once; a drawing, or a pane left undrawn, toasts nothing', async ($, on) => {
+  const clock = mock.clock(on)
+  const toasts: string[] = []
+  let isPlaced = true
+  on('process.run', async (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'log' ? LOG : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('ui.toast', async (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.panes', async () => ({ value: PANES }))
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: isPlaced ? { isPlaced: true as const } : { isPlaced: false as const, reason: 'narrow' } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  // a pane that is drawn: quiet
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  await clock.advance(20_000)
+  expect(toasts).toEqual([])
+  await ui.unmount()
+  // placed but never asked to draw
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  await clock.advance(4_000)
+  expect(toasts).toEqual([])
+  await clock.advance(2_000)
+  expect(toasts).toEqual(['git-graph: 패널 그리기 요청을 받지 못했어요 (표시 예, 배치 예)'])
+  await clock.advance(20_000)
+  expect(toasts).toHaveLength(1)
+  // waiting undrawn on a narrow terminal is normal
+  isPlaced = false
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await clock.advance(20_000)
+  expect(toasts).toHaveLength(1)
 })

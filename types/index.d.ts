@@ -18,7 +18,7 @@ declare module 'claude-code' {
       isWatching: boolean
       isTraced: boolean
       isDirtyOpen: boolean
-      isTreesOpen: boolean
+      refOpen: string
       treeChanges: Record<string, string>
       changes: GraphFile[] | null
     }
