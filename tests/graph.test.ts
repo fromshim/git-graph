@@ -43,6 +43,14 @@ test('upstream tracking and worktrees become chips', () => {
   // this session's own worktree is blue, the others purple
   const bg = (hash: string) => refChips('', hash, known).chips.map(c => c.backgroundColor)
   expect([bg('bbb'), bg('aaa')]).toEqual([[C.blue], [C.purple]])
+  // past three worktrees on one commit: the self one, then one ×N chip
+  const many = (n: number, self: number) =>
+    ({ heads: [], tracks: {}, trees: Array.from({ length: n }, (_, i) => ({ name: `w${i}`, path: `/r/w${i}`, head: 'ccc', isSelf: i === self })) })
+  const texts = (n: number, self: number) => refChips('', 'ccc', many(n, self)).chips.map(c => c.text)
+  expect(texts(3, 1)).toEqual([' ⑂ w0 ', ' ⑂ w1 ', ' ⑂ w2 '])
+  expect(texts(5, 3)).toEqual([' ⑂ w3 ', ' ⑂ ×4 '])
+  expect(texts(5, -1)).toEqual([' ⑂ ×5 '])
+  expect(refChips('', 'ccc', many(5, -1)).chips.map(c => c.backgroundColor)).toEqual([C.purple])
   // a slash does not make a branch remote: the local heads decide
   expect(refChips('docs/x, upstream/y', '', known).chips.map(c => c.text)).toEqual([' ⎇ docs/x ', ' ⌂ upstream/y '])
   // one worktree alone is just the repo: no chip

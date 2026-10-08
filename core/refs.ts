@@ -2,6 +2,7 @@ import type { GraphRefs, GraphTree } from '../types'
 import { C, chip } from './theme.ts'
 import type { Seg } from './theme.ts'
 
+const MAX_TREE_CHIPS = 3
 export const NO_REFS: GraphRefs = { heads: [], tracks: {}, trees: [] }
 
 // local ⎇ (= when origin points at the same commit, ↑↓ when it does not), remote ⌂, tag #,
@@ -14,7 +15,11 @@ export function refChips(decor: string, hash = '', known: GraphRefs = NO_REFS): 
   const isLocal = (r: string) => (known.heads.length > 0 ? known.heads.includes(r) : !r.startsWith('origin/'))
   const locals = new Set(names.filter(r => !r.startsWith('tag: ') && isLocal(r)))
   const trees = known.trees.length > 1 ? known.trees.filter(t => t.head === hash) : []
-  const chips: Seg[] = trees.map(t => chip(`⑂ ${t.name}`, t.isSelf ? C.blue : C.purple))
+  // past three on one commit: this session's own, then one ⑂ ×N for the rest
+  const shown = trees.length > MAX_TREE_CHIPS ? trees.filter(t => t.isSelf).slice(0, 1) : trees
+  const rest = trees.length - shown.length
+  const chips: Seg[] = shown.map(t => chip(`⑂ ${t.name}`, t.isSelf ? C.blue : C.purple))
+  if (rest > 0) chips.push(chip(`⑂ ×${rest}`, C.purple))
   for (const r of names) {
     if (r.startsWith('tag: ')) chips.push(chip(`# ${r.slice(5)}`, C.orange))
     else if (r.startsWith('origin/') && locals.has(r.slice(7))) continue
