@@ -15,11 +15,14 @@ function parse(decor: string, known: GraphRefs) {
   return { isHead, names, locals }
 }
 
+// the worktrees on one commit (none while there is only the one: it is just the repo)
+export const treesAt = (hash: string, known: GraphRefs): GraphTree[] => (known.trees.length > 1 ? known.trees.filter(t => t.head === hash) : [])
+
 // local ⎇ (= when origin points at the same commit, ↑↓ when it does not), remote ⌂, tag #,
 // worktree ⑂ (only once there is more than one; this session's own in yellow)
 export function refChips(decor: string, hash = '', known: GraphRefs = NO_REFS): { chips: Seg[]; isHead: boolean } {
   const { isHead, names, locals } = parse(decor, known)
-  const trees = known.trees.length > 1 ? known.trees.filter(t => t.head === hash) : []
+  const trees = treesAt(hash, known)
   // past three on one commit: this session's own, then one ⑂ ×N for the rest
   const shown = trees.length > MAX_TREE_CHIPS ? trees.filter(t => t.isSelf).slice(0, 1) : trees
   const rest = trees.length - shown.length
@@ -48,7 +51,7 @@ export function pointers(decor: string, hash: string, known: GraphRefs): Pointer
     locals: [...locals].map(name => ({ name, sync: names.includes(`origin/${name}`) ? '= origin' : known.tracks[name] || 'no upstream' })),
     remotes: names.filter(r => !r.startsWith('tag: ') && !locals.has(r) && !(r.startsWith('origin/') && locals.has(r.slice(7)))),
     tags: names.filter(r => r.startsWith('tag: ')).map(r => r.slice(5)),
-    trees: known.trees.length > 1 ? known.trees.filter(t => t.head === hash) : [],
+    trees: treesAt(hash, known),
   }
 }
 

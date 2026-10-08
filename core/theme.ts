@@ -12,6 +12,13 @@ export const C = {
 export const LANES = [C.blue, C.orange, C.purple, C.green, C.cyan, C.red, C.yellow]
 export const PEOPLE = [C.blue, C.purple, C.cyan]
 
+export const rgb = (hex: string) => parseInt(hex.slice(1), 16)
+// 0x00RRGGBB halfway between two colors: t = 0 is a, t = 1 is b
+export const mix = (a: number, b: number, t: number) =>
+  [16, 8, 0].reduce((out, shift) => out | (Math.round(((a >> shift) & 255) * (1 - t) + ((b >> shift) & 255) * t) << shift), 0)
+// a dark tint of `color`: it mixed into the pane's background, so a light label stays readable on it
+export const tint = (color: string, ratio = 0.28, base = C.bg) => `#${mix(rgb(base), rgb(color), ratio).toString(16).padStart(6, '0')}`
+
 export const chip = (text: string, backgroundColor: string): Seg => ({ text: ` ${text} `, backgroundColor, color: C.bg, bold: true })
 
 export function personColor(name: string): string {

@@ -8,7 +8,7 @@ import { parseChanges } from '../core/changes.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { MINE_CAP, addMine, moved } from '../core/mine.ts'
 import { parseShow } from '../core/show.ts'
-import { C } from '../core/theme.ts'
+import { C, tint } from '../core/theme.ts'
 import { breath, dotCells, splitDot } from '../core/pulse.ts'
 
 const S = '\x1f'
@@ -68,6 +68,17 @@ test('pointers list what is on one commit: branches with their origin state, rem
     trees: known.trees,
   })
   expect(pointers('', 'zzz', known).trees).toEqual([])
+})
+
+test('tint mixes a color a little into the pane background, so a light label stays readable on it', () => {
+  expect(tint(C.green)).toBe('#475647')
+  expect(tint(C.green, 0)).toBe(C.bg)
+  expect(tint(C.green, 1)).toBe(C.green)
+  // every chip color stays dark: a light label keeps its contrast (sum of channels well under half of white's)
+  for (const c of [C.green, C.red, C.orange, C.purple, C.glow, C.gray]) {
+    const n = parseInt(tint(c).slice(1), 16)
+    expect((n >> 16) + ((n >> 8) & 255) + (n & 255)).toBeLessThan(330)
+  }
 })
 
 test('layout draws one row per commit, bending forks and merges inside the row; HEAD is the one dot', () => {
@@ -197,10 +208,15 @@ test('scrolled down, the top lines and HEAD stay pinned over a ┊ gap', async (
   await down.unmount()
 })
 
-test('the card lists what points at the commit; the ⑂ 워크트리 button opens a list with each worktree and its change count', async ($, on) => {
+test('a ref chip is a tinted button: it opens a list under its row (one at a time) with each ref and worktree; the commit card no longer lists them', async ($, on) => {
+  const clock = mock.clock(on)
+  const statusCalls: string[] = []
   const out = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
   on('process.run', async (_, e) => {
-    if (e.argv[1] === '-C') return e.argv[2] === '/repo' ? out(' M a\n?? b\n') : out('', 128)
+    if (e.argv[1] === '-C') {
+      statusCalls.push(String(e.argv[2]))
+      return e.argv[2] === '/repo' ? out(' M a\n?? b\n') : out('', 128)
+    }
     if (e.argv[1] === 'worktree') return out('worktree /repo\nHEAD aaaaaaa1\nbranch refs/heads/main\n\nworktree /repo/.wt/x\nHEAD bbbbbbb2\ndetached\n')
     if (e.argv[1] === 'rev-parse') return out('/repo\n')
     if (e.argv[1] === 'for-each-ref') return out('main\t\n')
@@ -213,27 +229,48 @@ test('the card lists what points at the commit; the ⑂ 워크트리 button open
   on('session.start', async (_, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   for (const surface of ['terminal', 'desktop'] as const) {
+    statusCalls.length = 0
     const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: PROPS, requestId: 'git-graph' })
     const shown = async () => (await ui.findAll({ type: 'Text' })).map(t => t.text)
-    // the card: branch with origin state, tag, and the worktree on it, marked as this session's
+    // no worktree toggle in the top bar any more
+    expect(await ui.find({ key: 'trees' })).toBeUndefined()
+    // the chips: this session's worktree, the branch with origin state, the tag; each on a tinted Box
+    expect((await ui.find({ key: 'r:aaaaaaa:0' }))?.text).toBe('⑂ repo')
+    expect((await ui.find({ key: 'r:aaaaaaa:1' }))?.text).toBe('⎇ main =')
+    expect((await ui.find({ key: 'r:aaaaaaa:2' }))?.text).toBe('# v1')
+    expect((await ui.find({ key: 'box:r:aaaaaaa:1' }))?.props.backgroundColor).toBe(tint(C.green))
+    expect((await ui.find({ key: 'box:r:aaaaaaa:0' }))?.props.backgroundColor).toBe(tint(C.glow))
+    expect(await ui.find({ key: 'ref-card:aaaaaaa1' })).toBeUndefined()
+    // the HEAD chip stays a filled Text, not a button
+    expect(await shown()).toContain(' HEAD ')
+    // the commit card has no pointer section now
     await ui.press({ key: 'c:aaaaaaa' })
-    expect(await shown()).toEqual(expect.arrayContaining(['⎇ main', '  = origin', '# v1', '⑂ repo', '  /repo', '  이 세션']))
+    expect(await ui.find({ key: 'ref:b:main' })).toBeUndefined()
+    expect(await shown()).not.toContain('  = origin')
     await ui.press({ key: 'c:aaaaaaa' })
-    // the list
-    expect((await ui.find({ key: 'trees' }))?.text).toBe('⑂ 워크트리 2개')
-    expect(await ui.find({ key: 'tree:/repo' })).toBeUndefined()
-    await ui.press({ key: 'trees' })
-    expect(await ui.find({ key: 'tree:/repo' })).toBeDefined()
-    expect(await shown()).toEqual(expect.arrayContaining(['  /repo/.wt/x', '  bbbbbbb (detached)', '  변경 2개', '  변경 ?', '  ⎇ main']))
-    await ui.press({ key: 'trees' })
-    expect(await ui.find({ key: 'tree:/repo' })).toBeUndefined()
+    // a chip press opens the list: branch with origin state, tag, the worktree on it marked as this session's
+    await ui.press({ key: 'r:aaaaaaa:1' })
+    expect(await ui.find({ key: 'ref-card:aaaaaaa1' })).toBeDefined()
+    expect(await shown()).toEqual(expect.arrayContaining(['⎇ main', '  = origin', '# v1', '⑂ repo', '  ⎇ main', '  /repo', '  이 세션', '  변경 2개']))
+    expect((await ui.findAll({ type: 'Text', text: '이 세션' })).find(t => t.text === '  이 세션')?.props.color).toBe(C.glow)
+    // another row's chip moves it
+    await ui.press({ key: 'r:bbbbbbb:0' })
+    expect(await ui.find({ key: 'ref-card:aaaaaaa1' })).toBeUndefined()
+    expect(await shown()).toEqual(expect.arrayContaining(['⑂ x', '  bbbbbbb (detached)', '  /repo/.wt/x', '  변경 ?']))
+    // while open it follows the 5s refresh
+    const before = statusCalls.length
+    await clock.advance(5000)
+    expect(statusCalls.length).toBeGreaterThan(before)
+    // the same chip again closes it
+    await ui.press({ key: 'r:bbbbbbb:0' })
+    expect(await ui.find({ key: 'ref-card:bbbbbbb2' })).toBeUndefined()
     await ui.unmount()
   }
-  // scrolled: the pinned copy has the button, and the list stays in the main pane only
+  // scrolled: the pinned HEAD row has its own chip buttons, and the list stays in the main pane only
   const down = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: { ...PROPS, scroll: { offset: 5, bodyRows: 3 } }, requestId: 'git-graph' })
-  await down.press({ key: 'pin:trees' })
-  expect((await down.findAll({ key: 'tree:/repo' })).length).toBe(1)
-  await down.press({ key: 'trees' })
+  await down.press({ key: 'pin:r:aaaaaaa:1' })
+  expect((await down.findAll({ key: 'ref-card:aaaaaaa1' })).length).toBe(1)
+  await down.press({ key: 'r:aaaaaaa:1' })
   await down.unmount()
 })
 
@@ -443,8 +480,12 @@ test('the 경로 강조 toggle grays rows off the HEAD path, in the top bar and 
     const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: PROPS, requestId: 'git-graph' })
     expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조')
     expect(await color(ui, 'off the path')).toBe('#abb2bf')
+    expect((await ui.find({ key: 'box:r:xxxxxxx:0' }))?.props.backgroundColor).toBe(tint(C.green))
     await ui.press({ key: 'trace' })
     expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조 끄기')
+    // an off-path chip goes to a gray tint, an on-path one keeps its own
+    expect((await ui.find({ key: 'box:r:xxxxxxx:0' }))?.props.backgroundColor).toBe(tint(C.gray))
+    expect((await ui.find({ key: 'box:r:hhhhhhh:0' }))?.props.backgroundColor).toBe(tint(C.green))
     expect(await color(ui, 'off the path')).toBe('#5c6370')
     expect(await color(ui, 'on the path')).not.toBe('#5c6370')
     expect(await color(ui, 'root')).not.toBe('#5c6370')

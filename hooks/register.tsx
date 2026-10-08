@@ -8,11 +8,11 @@ import { ancestors, dim } from '../core/ancestry.ts'
 import { NEW, parseChanges } from '../core/changes.ts'
 import { addMine, moved } from '../core/mine.ts'
 import { grown } from '../core/remote.ts'
-import { pointers, track, trees } from '../core/refs.ts'
+import { pointers, track, trees, treesAt } from '../core/refs.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { PULSE_MS, breath, dotCells, splitDot } from '../core/pulse.ts'
 import { parseShow } from '../core/show.ts'
-import { C, chip, personColor } from '../core/theme.ts'
+import { C, chip, personColor, tint } from '../core/theme.ts'
 import type { Seg } from '../core/theme.ts'
 import type { GraphDetail, GraphLines, GraphRefs, GraphTree } from '../types'
 
@@ -25,7 +25,8 @@ const detail = atom({ plugin: 'git-graph', key: 'detail' } as const, null)
 const refs = atom({ plugin: 'git-graph', key: 'refs' } as const, { heads: [], tracks: {}, trees: [] })
 const wide = atom({ plugin: 'git-graph', key: 'wide' } as const, false)
 const isDirtyOpen = atom({ plugin: 'git-graph', key: 'isDirtyOpen' } as const, false)
-const isTreesOpen = atom({ plugin: 'git-graph', key: 'isTreesOpen' } as const, false)
+// the commit whose ref list is open under its row
+const refOpen = atom({ plugin: 'git-graph', key: 'refOpen' } as const, '')
 const treeChanges = atom({ plugin: 'git-graph', key: 'treeChanges' } as const, {})
 const changes = atom({ plugin: 'git-graph', key: 'changes' } as const, null)
 const isTraced = atom({ plugin: 'git-graph', key: 'isTraced' } as const, false)
@@ -61,7 +62,8 @@ async function refresh($: EngineInterface) {
   await update($, note, prev => (prev === msg ? prev : msg))
   await update($, dirty, prev => (prev === changed ? prev : changed))
   if (changed > 0 && (await read($, isDirtyOpen))) await loadChanges($)
-  if (known.trees.length > 1 && (await read($, isTreesOpen))) await loadTreeChanges($, known.trees)
+  const listed = treesAt(await read($, refOpen), known)
+  if (listed.length > 0) await loadTreeChanges($, listed)
   await update($, lines, prev => (prev.join('\n') === got.join('\n') ? prev : got))
 }
 
@@ -72,7 +74,7 @@ async function loadChanges($: EngineInterface) {
   await update($, changes, prev => (JSON.stringify(prev) === JSON.stringify(got) ? prev : got))
 }
 
-// uncommitted line count per worktree, only while the list is open; a failed run reads "?"
+// uncommitted line count per worktree, only while a ref list is open; a failed run reads "?"
 async function loadTreeChanges($: EngineInterface, list: GraphTree[]) {
   const got = Object.fromEntries(
     await Promise.all(
@@ -85,10 +87,13 @@ async function loadTreeChanges($: EngineInterface, list: GraphTree[]) {
   await update($, treeChanges, prev => (JSON.stringify(prev) === JSON.stringify(got) ? prev : got))
 }
 
-async function toggleTrees($: EngineInterface) {
+// the ref list of one commit, one at a time: a press on another row moves it
+async function toggleRefs($: EngineInterface, hash: string) {
   let isOpening = false
-  await update($, isTreesOpen, prev => (isOpening = !prev))
-  if (isOpening) await loadTreeChanges($, (await read($, refs)).trees)
+  await update($, refOpen, prev => ((isOpening = prev !== hash) ? hash : ''))
+  if (!isOpening) return
+  await update($, treeChanges, () => ({}))
+  await loadTreeChanges($, treesAt(hash, await read($, refs)))
 }
 
 async function toggleChanges($: EngineInterface) {
@@ -233,9 +238,8 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
   const openHash = await read($, open)
   const shown = await read($, detail)
   const isChangesOpen = await read($, isDirtyOpen)
-  const isTreeList = await read($, isTreesOpen)
+  const refHash = await read($, refOpen)
   const treeStatus = await read($, treeChanges)
-  const hasTrees = known.trees.length > 1
   const files = await read($, changes)
   const isWatch = await read($, isWatching)
   const isOn = await read($, isTraced)
@@ -256,26 +260,33 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
     </Box>
   )
 
-  // what points at this commit: each branch with its origin state, remotes, tags, worktrees
-  const pointerLines = (row: Row) => {
+  // what points at this commit, under its row: each branch with its origin state, remotes, tags,
+  // and each worktree with its branch, path and uncommitted count (this session's marked in yellow)
+  const refCard = (row: Row) => {
     const p = pointers(row.decor, row.hash, known)
-    return [
-      ...p.locals.map(l => (
-        <Text key={`ref:b:${l.name}`}>
-          <Text color={C.green}>{`⎇ ${l.name}`}</Text>
-          <Text color={C.gray}>{`  ${l.sync}`}</Text>
-        </Text>
-      )),
-      ...p.remotes.map(r => <Text key={`ref:r:${r}`} color={C.red}>{`⌂ ${r}`}</Text>),
-      ...p.tags.map(t => <Text key={`ref:t:${t}`} color={C.orange}>{`# ${t}`}</Text>),
-      ...p.trees.map(t => (
-        <Text key={`ref:w:${t.path}`}>
-          <Text color={t.isSelf ? C.glow : C.purple}>{`⑂ ${t.name}`}</Text>
-          <Text color={C.gray}>{`  ${t.path}`}</Text>
-          {t.isSelf && <Text color={C.glow}>  이 세션</Text>}
-        </Text>
-      )),
-    ]
+    return (
+      <Box key={`ref-card:${row.hash}`} flexDirection="column" marginLeft={2} borderStyle="round" borderColor={C.sel} paddingX={1}>
+        {p.locals.map(l => (
+          <Text key={`ref:b:${l.name}`}>
+            <Text color={C.green}>{`⎇ ${l.name}`}</Text>
+            <Text color={C.gray}>{`  ${l.sync}`}</Text>
+          </Text>
+        ))}
+        {p.remotes.map(r => <Text key={`ref:r:${r}`} color={C.red}>{`⌂ ${r}`}</Text>)}
+        {p.tags.map(t => <Text key={`ref:t:${t}`} color={C.orange}>{`# ${t}`}</Text>)}
+        {p.trees.map(t => (
+          <Box key={`ref:w:${t.path}`} flexDirection="column">
+            <Text>
+              <Text bold color={t.isSelf ? C.glow : C.purple}>{`⑂ ${t.name}`}</Text>
+              <Text color={t.branch ? C.green : C.yellow}>{t.branch ? `  ⎇ ${t.branch}` : `  ${t.head.slice(0, 7)} (detached)`}</Text>
+              {t.isSelf && <Text color={C.glow}>  이 세션</Text>}
+            </Text>
+            <Text color={C.gray} wrap="truncate-start">{`  ${t.path}`}</Text>
+            <Text color={C.gray}>{`  변경 ${treeStatus[t.path] === undefined ? '…' : treeStatus[t.path] === '?' ? '?' : `${treeStatus[t.path]}개`}`}</Text>
+          </Box>
+        ))}
+      </Box>
+    )
   }
 
   const card = (d: GraphDetail, row: Row) => {
@@ -296,8 +307,7 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
               {`파일 ${d.files.length}개 `}
               <Text color={C.green}>{`+${adds}`}</Text> <Text color={C.red}>{`−${dels}`}</Text>
             </Text>
-            {pointerLines(row)}
-            {d.files.slice(0, MAX_FILES).map((f, i) => {
+              {d.files.slice(0, MAX_FILES).map((f, i) => {
               const cut = f.path.lastIndexOf('/') + 1
               return fileLine(`f:${d.hash}:${i}`, f.path, cut, [
                 <Text color={C.green}>{`+${f.add}`.padStart(5)}</Text>,
@@ -356,23 +366,6 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
     )
   }
 
-  // every worktree: name, branch (or the detached head), path, uncommitted count
-  const treesCard = () => (
-    <Box key="trees-card" flexDirection="column" marginLeft={2} borderStyle="round" borderColor={C.sel} paddingX={1}>
-      {known.trees.map(t => (
-        <Box key={`tree:${t.path}`} flexDirection="column">
-          <Text>
-            <Text bold color={t.isSelf ? C.glow : C.purple}>{`⑂ ${t.name}`}</Text>
-            <Text color={t.branch ? C.green : C.yellow}>{t.branch ? `  ⎇ ${t.branch}` : `  ${t.head.slice(0, 7)} (detached)`}</Text>
-            {t.isSelf && <Text color={C.glow}>  이 세션</Text>}
-          </Text>
-          <Text color={C.gray} wrap="truncate-start">{`  ${t.path}`}</Text>
-          <Text color={C.gray}>{`  변경 ${treeStatus[t.path] === undefined ? '…' : treeStatus[t.path] === '?' ? '?' : `${treeStatus[t.path]}개`}`}</Text>
-        </Box>
-      ))}
-    </Box>
-  )
-
   // the top lines (fold button, uncommitted count), and the HEAD row once it scrolled out
   const top = (pin: string) => [
     <Box key={`${pin}bar`}>
@@ -389,21 +382,12 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
           {isWatch ? '원격 확인 끄기' : '원격 확인'}
         </Button>
       </Box>
-      <Box key={`${pin}trace-bar`} marginRight={hasTrees ? 2 : 0}>
+      <Box key={`${pin}trace-bar`}>
         <Button key={`${pin}trace`} plain dimColor={!isOn} hover={{ color: C.blue }} onPress={() => void update($, isTraced, v => !v)}>
           {isOn ? '경로 강조 끄기' : '경로 강조'}
         </Button>
       </Box>
-      {hasTrees && (
-        <Box key={`${pin}trees-bar`}>
-          <Button key={`${pin}trees`} plain dimColor={!isTreeList} hover={{ color: C.blue }} onPress={() => void toggleTrees($).catch(() => {})}>
-            {`⑂ 워크트리 ${known.trees.length}개`}
-          </Button>
-        </Box>
-      )}
     </Box>,
-    // like the uncommitted card, the list sits in place only
-    !pin && hasTrees && isTreeList && treesCard(),
     changed > 0 && (
       <Box key={`${pin}dirty-bar`}>
         <Text color={C.yellow}>◌ </Text>
@@ -443,11 +427,31 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
           {graph}
         </Box>
         <Box flexGrow={1} flexShrink={1} overflow="hidden">
-          <Text wrap="truncate-end">
-            {paint(row.isHead ? [chip('HEAD', C.blue), ...row.refs] : row.refs).flatMap(s => [seg(s), ' '])}
-            {made.has(row.hash) && <Text color={C.yellow}>✦ </Text>}
-            <Text color={isOff ? C.gray : row.isHead ? C.white : C.fg} bold={row.isHead}>{row.subject}</Text>
-          </Text>
+          {row.isHead && (
+            <Box flexShrink={0} marginRight={1}>
+              {paint([chip('HEAD', C.blue)]).map(seg)}
+            </Box>
+          )}
+          {paint(row.refs).map((c, i) => (
+            // a button on a dark tint of the chip's color; a keyed Box around it gives the hover its anchor
+            <Box key={`${pin}box:r:${row.short}:${i}`} flexShrink={0} marginRight={1} paddingX={1} backgroundColor={tint(c.backgroundColor ?? C.gray)}>
+              <Button
+                key={`${pin}r:${row.short}:${i}`}
+                plain
+                dimColor={isOff}
+                hover={{ color: C.blue }}
+                onPress={() => void toggleRefs($, row.hash).catch(() => {})}
+              >
+                {c.text.trim()}
+              </Button>
+            </Box>
+          ))}
+          {made.has(row.hash) && (
+            <Box flexShrink={0}>
+              <Text color={C.yellow}>✦ </Text>
+            </Box>
+          )}
+          <Text wrap="truncate-end" color={isOff ? C.gray : row.isHead ? C.white : C.fg} bold={row.isHead}>{row.subject}</Text>
         </Box>
         <Box flexShrink={0} marginLeft={1}>
           <Text backgroundColor={personColor(row.author)} color={C.bg}>{` ${row.author.padEnd(AUTHOR_CELLS)} `}</Text>
@@ -487,6 +491,7 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
         ) : (
           <Box flexDirection="column">
             {commit(row, '')}
+            {refHash === row.hash && refCard(row)}
             {openHash === row.hash && shown?.hash === row.hash && card(shown, row)}
           </Box>
         ),
