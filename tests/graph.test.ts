@@ -513,14 +513,21 @@ test('원격 확인 fetches without prompts, toasts new commits once, one toast 
   await ui.unmount()
 })
 
-test('the HEAD pulse: frames breathe between blue and a dim blue, encode as one ● cell, and the dot splits out of a graph row', () => {
-  const fgs = breath(15)
-  expect(fgs).toHaveLength(15)
+test('the HEAD pulse: 48 frames glow between bright yellow and a partial fade, encode as one ● cell, and the dot splits out of a graph row', () => {
+  const fgs = breath()
+  expect(fgs).toHaveLength(48)
+  // starts at the trough, peaks mid-cycle at the full glow, never goes past it
   expect(fgs[0]).toBe(Math.min(...fgs))
-  expect(Math.max(...fgs)).toBeLessThanOrEqual(0x61afef)
-  expect(new Set(fgs).size).toBe(8)
-  // the dimmest step sits closer to the band than the blue is
-  expect((fgs[0] ?? 0) & 255).toBeLessThan(0xef)
+  expect(fgs[24]).toBe(0xffd866)
+  expect(Math.max(...fgs)).toBe(0xffd866)
+  // it never switches off: even the trough keeps most of the yellow (red channel >= 0xb0) and stays warm (red over blue)
+  expect((fgs[0] ?? 0) >> 16).toBeGreaterThanOrEqual(0xb0)
+  expect(((fgs[0] ?? 0) >> 16) - ((fgs[0] ?? 0) & 255)).toBeGreaterThan(0x40)
+  // sine ease: it moves least beside the trough and the peak, most halfway between
+  const lum = (n: number) => (n >> 16) + ((n >> 8) & 255) + (n & 255)
+  const steps = fgs.map((f, i) => Math.abs(lum(fgs[(i + 1) % 48] ?? 0) - lum(f)))
+  expect(steps[0]).toBeLessThan((steps[11] ?? 0) / 4)
+  expect(steps[23]).toBeLessThan((steps[11] ?? 0) / 4)
   // 0x25cf, 0x61afef, 0x3e4451 as little-endian u32, base64
   expect(dotCells(0x61afef)).toBe('zyUAAO+vYQBRRD4A')
   const red = { text: '●─', color: '#f00' }
@@ -532,7 +539,7 @@ test('the HEAD pulse: frames breathe between blue and a dim blue, encode as one 
   expect(splitDot([{ text: '┿ ' }])).toBeNull()
 })
 
-test('HEAD pulses as a Raster on the terminal and stays a plain ● elsewhere; a timer blits frames until blit is denied', async ($, on) => {
+test('HEAD pulses as a Raster on the terminal and stays a still yellow ● elsewhere; a timer blits frames until blit is denied', async ($, on) => {
   const clock = mock.clock(on)
   const blits: { requestId: string; key: string; cells?: string }[] = []
   let isMounted = true
@@ -550,7 +557,7 @@ test('HEAD pulses as a Raster on the terminal and stays a plain ● elsewhere; a
   // desktop: no Raster, the ● stays in the graph text
   const flat = await $.ui.mount({ plugin: 'git-graph', surface: 'desktop', component: 'Pane', props: PROPS, requestId: 'git-graph' })
   expect(await flat.find({ type: 'Raster' })).toBeUndefined()
-  expect(await flat.find({ type: 'Text', text: '●' })).toBeDefined()
+  expect((await flat.find({ type: 'Text', text: '●' }))?.props.color).toBe(C.glow)
   await flat.unmount()
   await clock.advance(1000)
   expect(blits).toHaveLength(0)
@@ -562,16 +569,16 @@ test('HEAD pulses as a Raster on the terminal and stays a plain ● elsewhere; a
   // a second drawing starts no second timer
   await ui.press({ key: 'trace' })
   await ui.press({ key: 'trace' })
-  await clock.advance(80 * 15)
-  expect(blits).toHaveLength(15)
+  await clock.advance(50 * 48)
+  expect(blits).toHaveLength(48)
   expect(blits.every(b => b.requestId === 'git-graph' && b.key === 'pulse')).toBe(true)
-  expect(new Set(blits.map(b => b.cells)).size).toBe(8)
+  expect(new Set(blits.map(b => b.cells)).size).toBe(new Set(breath()).size)
   // denied: it gives up after a few misses and blits no more
   isMounted = false
-  await clock.advance(80 * 10)
+  await clock.advance(50 * 10)
   const stopped = blits.length
-  expect(stopped).toBe(15 + 5)
-  await clock.advance(80 * 10)
+  expect(stopped).toBe(48 + 5)
+  await clock.advance(50 * 10)
   expect(blits).toHaveLength(stopped)
   await ui.unmount()
 })

@@ -97,7 +97,7 @@ async function toggleChanges($: EngineInterface) {
   if (isOpening) await loadChanges($)
 }
 
-// HEAD's ● breathes: frames are made once, a timer blits the next one (no redraw)
+// HEAD's ● glows: frames are made once, a timer blits the next one (no redraw)
 const FRAMES = breath().map(fg => dotCells(fg))
 const PULSE_KEY = 'pulse'
 const MAX_MISSES = 5
@@ -421,17 +421,18 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
     // off the path to HEAD: graph, chips and subject go gray
     const isOff = kin !== null && !kin.has(row.hash)
     const paint = (segs: Seg[]) => (isOff ? dim(segs) : segs)
-    // the main pane's HEAD row only: the pinned copy keeps the plain ● (its key would repeat)
-    const split = Raster && row.isHead && !pin ? splitDot(row.graph) : null
-    if (split) startPulse($)
-    const graph =
-      Raster && split
-        ? [
-            ...(split.before.length > 0 ? [<Text>{split.before.map(seg)}</Text>] : []),
-            <Raster key={PULSE_KEY} columns={1} rows={1} cells={FRAMES[phase] ?? ''} />,
-            ...(split.after.length > 0 ? [<Text>{split.after.map(seg)}</Text>] : []),
-          ]
-        : [<Text>{paint(row.graph).map(seg)}</Text>]
+    // HEAD's dot is bright yellow everywhere; it pulses (Raster) in the main pane's terminal only,
+    // the pinned copy and the other surfaces keep it still (a Raster key would repeat in the copy)
+    const split = row.isHead ? splitDot(row.graph) : null
+    const isPulsing = !!Raster && !pin
+    if (split && isPulsing) startPulse($)
+    const graph = split
+      ? [
+          ...(split.before.length > 0 ? [<Text>{split.before.map(seg)}</Text>] : []),
+          Raster && isPulsing ? <Raster key={PULSE_KEY} columns={1} rows={1} cells={FRAMES[phase] ?? ''} /> : <Text color={C.glow}>●</Text>,
+          ...(split.after.length > 0 ? [<Text>{split.after.map(seg)}</Text>] : []),
+        ]
+      : [<Text>{paint(row.graph).map(seg)}</Text>]
     return (
       <Box
         key={`${pin}${row.hash}`}
