@@ -7,7 +7,7 @@ export const C = {
   // HEAD's dot and this session's worktree: a yellow brighter than C.yellow, so it reads as a glow
   glow: '#ffd866',
 }
-// lanes take every hue; chips keep their own: branch green, remote red, tag orange, worktree purple (this session's own blue),
+// lanes take every hue; chips keep their own: branch green, remote red, tag orange, worktree purple (this session's own yellow),
 // people blue/purple/cyan
 export const LANES = [C.blue, C.orange, C.purple, C.green, C.cyan, C.red, C.yellow]
 export const PEOPLE = [C.blue, C.purple, C.cyan]

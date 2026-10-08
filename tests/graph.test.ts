@@ -41,9 +41,9 @@ test('upstream tracking and worktrees become chips', () => {
   expect(list).toEqual([{ name: 'main', path: '/r/main', head: 'aaa', branch: 'main', isSelf: false }, { name: 'wt-a', path: '/r/wt-a', head: 'bbb', branch: '', isSelf: true }])
   const known = { heads: ['feat', 'docs/x'], tracks: { feat: '↑2' }, trees: list }
   expect(refChips('feat', 'bbb', known).chips.map(c => c.text)).toEqual([' ⑂ wt-a ', ' ⎇ feat ↑2 '])
-  // this session's own worktree is blue, the others purple
+  // this session's own worktree is the yellow glow, the others purple
   const bg = (hash: string) => refChips('', hash, known).chips.map(c => c.backgroundColor)
-  expect([bg('bbb'), bg('aaa')]).toEqual([[C.blue], [C.purple]])
+  expect([bg('bbb'), bg('aaa')]).toEqual([[C.glow], [C.purple]])
   // past three worktrees on one commit: the self one, then one ×N chip
   const many = (n: number, self: number) =>
     ({ heads: [], tracks: {}, trees: Array.from({ length: n }, (_, i) => ({ name: `w${i}`, path: `/r/w${i}`, head: 'ccc', branch: '', isSelf: i === self })) })

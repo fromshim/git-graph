@@ -270,9 +270,9 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
       ...p.tags.map(t => <Text key={`ref:t:${t}`} color={C.orange}>{`# ${t}`}</Text>),
       ...p.trees.map(t => (
         <Text key={`ref:w:${t.path}`}>
-          <Text color={t.isSelf ? C.blue : C.purple}>{`⑂ ${t.name}`}</Text>
+          <Text color={t.isSelf ? C.glow : C.purple}>{`⑂ ${t.name}`}</Text>
           <Text color={C.gray}>{`  ${t.path}`}</Text>
-          {t.isSelf && <Text color={C.blue}>  이 세션</Text>}
+          {t.isSelf && <Text color={C.glow}>  이 세션</Text>}
         </Text>
       )),
     ]
@@ -362,9 +362,9 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
       {known.trees.map(t => (
         <Box key={`tree:${t.path}`} flexDirection="column">
           <Text>
-            <Text bold color={t.isSelf ? C.blue : C.purple}>{`⑂ ${t.name}`}</Text>
+            <Text bold color={t.isSelf ? C.glow : C.purple}>{`⑂ ${t.name}`}</Text>
             <Text color={t.branch ? C.green : C.yellow}>{t.branch ? `  ⎇ ${t.branch}` : `  ${t.head.slice(0, 7)} (detached)`}</Text>
-            {t.isSelf && <Text color={C.blue}>  이 세션</Text>}
+            {t.isSelf && <Text color={C.glow}>  이 세션</Text>}
           </Text>
           <Text color={C.gray} wrap="truncate-start">{`  ${t.path}`}</Text>
           <Text color={C.gray}>{`  변경 ${treeStatus[t.path] === undefined ? '…' : treeStatus[t.path] === '?' ? '?' : `${treeStatus[t.path]}개`}`}</Text>

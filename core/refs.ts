@@ -16,14 +16,14 @@ function parse(decor: string, known: GraphRefs) {
 }
 
 // local ⎇ (= when origin points at the same commit, ↑↓ when it does not), remote ⌂, tag #,
-// worktree ⑂ (only once there is more than one; this session's own in blue)
+// worktree ⑂ (only once there is more than one; this session's own in yellow)
 export function refChips(decor: string, hash = '', known: GraphRefs = NO_REFS): { chips: Seg[]; isHead: boolean } {
   const { isHead, names, locals } = parse(decor, known)
   const trees = known.trees.length > 1 ? known.trees.filter(t => t.head === hash) : []
   // past three on one commit: this session's own, then one ⑂ ×N for the rest
   const shown = trees.length > MAX_TREE_CHIPS ? trees.filter(t => t.isSelf).slice(0, 1) : trees
   const rest = trees.length - shown.length
-  const chips: Seg[] = shown.map(t => chip(`⑂ ${t.name}`, t.isSelf ? C.blue : C.purple))
+  const chips: Seg[] = shown.map(t => chip(`⑂ ${t.name}`, t.isSelf ? C.glow : C.purple))
   if (rest > 0) chips.push(chip(`⑂ ×${rest}`, C.purple))
   for (const r of names) {
     if (r.startsWith('tag: ')) chips.push(chip(`# ${r.slice(5)}`, C.orange))
