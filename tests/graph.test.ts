@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { layout } from '../core/layout.ts'
 import { grown } from '../core/remote.ts'
-import { age, refChips, track, trees } from '../core/refs.ts'
+import { age, pointers, refChips, track, trees } from '../core/refs.ts'
 import { ancestors, dim } from '../core/ancestry.ts'
 import { parseChanges } from '../core/changes.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
@@ -37,7 +37,7 @@ test('refs become chips: local+origin merged, remote and tag apart, origin/HEAD 
 test('upstream tracking and worktrees become chips', () => {
   expect([track('[ahead 2, behind 1]'), track('[behind 3]'), track('[gone]'), track('')]).toEqual(['↑2 ↓1', '↓3', '', ''])
   const list = trees('worktree /r/main\nHEAD aaa\nbranch refs/heads/main\n\nworktree /r/wt-a\nHEAD bbb\ndetached\n', '/r/wt-a')
-  expect(list).toEqual([{ name: 'main', path: '/r/main', head: 'aaa', isSelf: false }, { name: 'wt-a', path: '/r/wt-a', head: 'bbb', isSelf: true }])
+  expect(list).toEqual([{ name: 'main', path: '/r/main', head: 'aaa', branch: 'main', isSelf: false }, { name: 'wt-a', path: '/r/wt-a', head: 'bbb', branch: '', isSelf: true }])
   const known = { heads: ['feat', 'docs/x'], tracks: { feat: '↑2' }, trees: list }
   expect(refChips('feat', 'bbb', known).chips.map(c => c.text)).toEqual([' ⑂ wt-a ', ' ⎇ feat ↑2 '])
   // this session's own worktree is blue, the others purple
@@ -45,7 +45,7 @@ test('upstream tracking and worktrees become chips', () => {
   expect([bg('bbb'), bg('aaa')]).toEqual([[C.blue], [C.purple]])
   // past three worktrees on one commit: the self one, then one ×N chip
   const many = (n: number, self: number) =>
-    ({ heads: [], tracks: {}, trees: Array.from({ length: n }, (_, i) => ({ name: `w${i}`, path: `/r/w${i}`, head: 'ccc', isSelf: i === self })) })
+    ({ heads: [], tracks: {}, trees: Array.from({ length: n }, (_, i) => ({ name: `w${i}`, path: `/r/w${i}`, head: 'ccc', branch: '', isSelf: i === self })) })
   const texts = (n: number, self: number) => refChips('', 'ccc', many(n, self)).chips.map(c => c.text)
   expect(texts(3, 1)).toEqual([' ⑂ w0 ', ' ⑂ w1 ', ' ⑂ w2 '])
   expect(texts(5, 3)).toEqual([' ⑂ w3 ', ' ⑂ ×4 '])
@@ -55,6 +55,18 @@ test('upstream tracking and worktrees become chips', () => {
   expect(refChips('docs/x, upstream/y', '', known).chips.map(c => c.text)).toEqual([' ⎇ docs/x ', ' ⌂ upstream/y '])
   // one worktree alone is just the repo: no chip
   expect(refChips('', 'aaa', { heads: [], tracks: {}, trees: list.slice(0, 1) }).chips).toEqual([])
+})
+
+test('pointers list what is on one commit: branches with their origin state, remotes, tags, worktrees', () => {
+  const tree = (name: string, isSelf: boolean) => ({ name, path: `/r/${name}`, head: 'aaa', branch: '', isSelf })
+  const known = { heads: ['main', 'feat', 'lone'], tracks: { feat: '↑1 ↓2' }, trees: [tree('main', false), tree('wt', true)] }
+  expect(pointers('HEAD -> main, origin/main, origin/HEAD, feat, lone, origin/x, tag: v1', 'aaa', known)).toEqual({
+    locals: [{ name: 'main', sync: '= origin' }, { name: 'feat', sync: '↑1 ↓2' }, { name: 'lone', sync: 'no upstream' }],
+    remotes: ['origin/x'],
+    tags: ['v1'],
+    trees: known.trees,
+  })
+  expect(pointers('', 'zzz', known).trees).toEqual([])
 })
 
 test('layout draws one row per commit, bending forks and merges inside the row; HEAD is the one dot', () => {
@@ -184,6 +196,46 @@ test('scrolled down, the top lines and HEAD stay pinned over a ┊ gap', async (
   await down.unmount()
 })
 
+test('the card lists what points at the commit; the ⑂ 워크트리 button opens a list with each worktree and its change count', async ($, on) => {
+  const out = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+  on('process.run', async (_, e) => {
+    if (e.argv[1] === '-C') return e.argv[2] === '/repo' ? out(' M a\n?? b\n') : out('', 128)
+    if (e.argv[1] === 'worktree') return out('worktree /repo\nHEAD aaaaaaa1\nbranch refs/heads/main\n\nworktree /repo/.wt/x\nHEAD bbbbbbb2\ndetached\n')
+    if (e.argv[1] === 'rev-parse') return out('/repo\n')
+    if (e.argv[1] === 'for-each-ref') return out('main\t\n')
+    if (e.argv[1] === 'log') return out(LOG)
+    if (e.argv[1] === 'show') return out('Merge it\n\nwhy\n\x1e\n4\t2\tsrc/app/main.ts\n')
+    return out('')
+  })
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: PROPS, requestId: 'git-graph' })
+    const shown = async () => (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    // the card: branch with origin state, tag, and the worktree on it, marked as this session's
+    await ui.press({ key: 'c:aaaaaaa' })
+    expect(await shown()).toEqual(expect.arrayContaining(['⎇ main', '  = origin', '# v1', '⑂ repo', '  /repo', '  이 세션']))
+    await ui.press({ key: 'c:aaaaaaa' })
+    // the list
+    expect((await ui.find({ key: 'trees' }))?.text).toBe('⑂ 워크트리 2개')
+    expect(await ui.find({ key: 'tree:/repo' })).toBeUndefined()
+    await ui.press({ key: 'trees' })
+    expect(await ui.find({ key: 'tree:/repo' })).toBeDefined()
+    expect(await shown()).toEqual(expect.arrayContaining(['  /repo/.wt/x', '  bbbbbbb (detached)', '  변경 2개', '  변경 ?', '  ⎇ main']))
+    await ui.press({ key: 'trees' })
+    expect(await ui.find({ key: 'tree:/repo' })).toBeUndefined()
+    await ui.unmount()
+  }
+  // scrolled: the pinned copy has the button, and the list stays in the main pane only
+  const down = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: { ...PROPS, scroll: { offset: 5, bodyRows: 3 } }, requestId: 'git-graph' })
+  await down.press({ key: 'pin:trees' })
+  expect((await down.findAll({ key: 'tree:/repo' })).length).toBe(1)
+  await down.press({ key: 'trees' })
+  await down.unmount()
+})
+
 test('outside a repo the pane says so', async ($, on) => {
   on('process.run', async () => ({ value: { exitCode: 128, stdout: '', stderr: 'fatal', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('command.register', async () => ({ value: { command: 'git-graph' } }))
@@ -274,7 +326,7 @@ test('addMine keeps the newest first, drops repeats and stays capped', () => {
 const WT = (...heads: string[]) => heads.map((h, i) => `worktree /r/w${i}\nHEAD ${h}\nbranch refs/heads/b${i}\n`).join('\n')
 
 test('moved lists the worktrees whose HEAD changed, by path; added, removed and unborn are handled', () => {
-  const t = (path: string, head: string) => ({ name: path, path, head, isSelf: false })
+  const t = (path: string, head: string) => ({ name: path, path, head, branch: '', isSelf: false })
   expect(moved([t('/a', '1'), t('/b', '2')], [t('/a', '1'), t('/b', '3')])).toEqual([{ before: '2', after: '3' }])
   expect(moved([t('/a', '1'), t('/b', '2')], [t('/a', '4'), t('/b', '5')])).toEqual([{ before: '1', after: '4' }, { before: '2', after: '5' }])
   expect(moved([t('/a', '1')], [t('/a', '1'), t('/new', '9')])).toEqual([])

@@ -1,19 +1,19 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
 
-import { DIFF, FETCH, FETCH_ENV, GIT, STATUS, TOP, TRACKS, TREES, added, show } from '../core/commands.ts'
+import { DIFF, FETCH, FETCH_ENV, GIT, STATUS, TOP, TRACKS, TREES, added, show, statusIn } from '../core/commands.ts'
 import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
 import { ancestors, dim } from '../core/ancestry.ts'
 import { NEW, parseChanges } from '../core/changes.ts'
 import { addMine, moved } from '../core/mine.ts'
 import { grown } from '../core/remote.ts'
-import { track, trees } from '../core/refs.ts'
+import { pointers, track, trees } from '../core/refs.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { parseShow } from '../core/show.ts'
 import { C, chip, personColor } from '../core/theme.ts'
 import type { Seg } from '../core/theme.ts'
-import type { GraphDetail, GraphLines, GraphRefs } from '../types'
+import type { GraphDetail, GraphLines, GraphRefs, GraphTree } from '../types'
 
 const PANE = 'git-graph'
 const lines = atom({ plugin: 'git-graph', key: 'lines' } as const, [])
@@ -24,6 +24,8 @@ const detail = atom({ plugin: 'git-graph', key: 'detail' } as const, null)
 const refs = atom({ plugin: 'git-graph', key: 'refs' } as const, { heads: [], tracks: {}, trees: [] })
 const wide = atom({ plugin: 'git-graph', key: 'wide' } as const, false)
 const isDirtyOpen = atom({ plugin: 'git-graph', key: 'isDirtyOpen' } as const, false)
+const isTreesOpen = atom({ plugin: 'git-graph', key: 'isTreesOpen' } as const, false)
+const treeChanges = atom({ plugin: 'git-graph', key: 'treeChanges' } as const, {})
 const changes = atom({ plugin: 'git-graph', key: 'changes' } as const, null)
 const isTraced = atom({ plugin: 'git-graph', key: 'isTraced' } as const, false)
 const isWatching = atom({ plugin: 'git-graph', key: 'isWatching' } as const, false)
@@ -58,6 +60,7 @@ async function refresh($: EngineInterface) {
   await update($, note, prev => (prev === msg ? prev : msg))
   await update($, dirty, prev => (prev === changed ? prev : changed))
   if (changed > 0 && (await read($, isDirtyOpen))) await loadChanges($)
+  if (known.trees.length > 1 && (await read($, isTreesOpen))) await loadTreeChanges($, known.trees)
   await update($, lines, prev => (prev.join('\n') === got.join('\n') ? prev : got))
 }
 
@@ -66,6 +69,25 @@ async function loadChanges($: EngineInterface) {
   const [d, st] = await Promise.all([DIFF, STATUS].map(argv => $.process.run(argv).catch(() => undefined)))
   const got = parseChanges(d?.exitCode === 0 ? d.stdout : '', st?.exitCode === 0 ? st.stdout : '')
   await update($, changes, prev => (JSON.stringify(prev) === JSON.stringify(got) ? prev : got))
+}
+
+// uncommitted line count per worktree, only while the list is open; a failed run reads "?"
+async function loadTreeChanges($: EngineInterface, list: GraphTree[]) {
+  const got = Object.fromEntries(
+    await Promise.all(
+      list.map(async t => {
+        const r = await $.process.run(statusIn(t.path)).catch(() => undefined)
+        return [t.path, r?.exitCode === 0 ? String(r.stdout.split('\n').filter(Boolean).length) : '?'] as const
+      }),
+    ),
+  )
+  await update($, treeChanges, prev => (JSON.stringify(prev) === JSON.stringify(got) ? prev : got))
+}
+
+async function toggleTrees($: EngineInterface) {
+  let isOpening = false
+  await update($, isTreesOpen, prev => (isOpening = !prev))
+  if (isOpening) await loadTreeChanges($, (await read($, refs)).trees)
 }
 
 async function toggleChanges($: EngineInterface) {
@@ -185,11 +207,15 @@ export const register: Register = on => {
       )
 
     const isWide = await read($, wide)
-    const { rows, lanes } = layout(await read($, lines), Date.now(), await read($, refs), isWide ? Infinity : FOLDED_LANES)
+    const known = await read($, refs)
+    const { rows, lanes } = layout(await read($, lines), Date.now(), known, isWide ? Infinity : FOLDED_LANES)
     const changed = await read($, dirty)
     const openHash = await read($, open)
     const shown = await read($, detail)
     const isChangesOpen = await read($, isDirtyOpen)
+    const isTreeList = await read($, isTreesOpen)
+    const treeStatus = await read($, treeChanges)
+    const hasTrees = known.trees.length > 1
     const files = await read($, changes)
     const isWatch = await read($, isWatching)
     const isOn = await read($, isTraced)
@@ -210,7 +236,30 @@ export const register: Register = on => {
       </Box>
     )
 
-    const card = (d: GraphDetail, short: string) => {
+    // what points at this commit: each branch with its origin state, remotes, tags, worktrees
+    const pointerLines = (row: Row) => {
+      const p = pointers(row.decor, row.hash, known)
+      return [
+        ...p.locals.map(l => (
+          <Text key={`ref:b:${l.name}`}>
+            <Text color={C.green}>{`⎇ ${l.name}`}</Text>
+            <Text color={C.gray}>{`  ${l.sync}`}</Text>
+          </Text>
+        )),
+        ...p.remotes.map(r => <Text key={`ref:r:${r}`} color={C.red}>{`⌂ ${r}`}</Text>),
+        ...p.tags.map(t => <Text key={`ref:t:${t}`} color={C.orange}>{`# ${t}`}</Text>),
+        ...p.trees.map(t => (
+          <Text key={`ref:w:${t.path}`}>
+            <Text color={t.isSelf ? C.blue : C.purple}>{`⑂ ${t.name}`}</Text>
+            <Text color={C.gray}>{`  ${t.path}`}</Text>
+            {t.isSelf && <Text color={C.blue}>  이 세션</Text>}
+          </Text>
+        )),
+      ]
+    }
+
+    const card = (d: GraphDetail, row: Row) => {
+      const short = row.short
       const [title = '', ...rest] = d.body.split('\n')
       const more = rest.join('\n').trim()
       const adds = d.files.reduce((n, f) => n + (Number(f.add) || 0), 0)
@@ -227,6 +276,7 @@ export const register: Register = on => {
                 {`파일 ${d.files.length}개 `}
                 <Text color={C.green}>{`+${adds}`}</Text> <Text color={C.red}>{`−${dels}`}</Text>
               </Text>
+              {pointerLines(row)}
               {d.files.slice(0, MAX_FILES).map((f, i) => {
                 const cut = f.path.lastIndexOf('/') + 1
                 return fileLine(`f:${d.hash}:${i}`, f.path, cut, [
@@ -286,6 +336,23 @@ export const register: Register = on => {
       )
     }
 
+    // every worktree: name, branch (or the detached head), path, uncommitted count
+    const treesCard = () => (
+      <Box key="trees-card" flexDirection="column" marginLeft={2} borderStyle="round" borderColor={C.sel} paddingX={1}>
+        {known.trees.map(t => (
+          <Box key={`tree:${t.path}`} flexDirection="column">
+            <Text>
+              <Text bold color={t.isSelf ? C.blue : C.purple}>{`⑂ ${t.name}`}</Text>
+              <Text color={t.branch ? C.green : C.yellow}>{t.branch ? `  ⎇ ${t.branch}` : `  ${t.head.slice(0, 7)} (detached)`}</Text>
+              {t.isSelf && <Text color={C.blue}>  이 세션</Text>}
+            </Text>
+            <Text color={C.gray} wrap="truncate-start">{`  ${t.path}`}</Text>
+            <Text color={C.gray}>{`  변경 ${treeStatus[t.path] === undefined ? '…' : treeStatus[t.path] === '?' ? '?' : `${treeStatus[t.path]}개`}`}</Text>
+          </Box>
+        ))}
+      </Box>
+    )
+
     // the top lines (fold button, uncommitted count), and the HEAD row once it scrolled out
     const top = (pin: string) => [
       <Box key={`${pin}bar`}>
@@ -302,12 +369,21 @@ export const register: Register = on => {
             {isWatch ? '원격 확인 끄기' : '원격 확인'}
           </Button>
         </Box>
-        <Box key={`${pin}trace-bar`}>
+        <Box key={`${pin}trace-bar`} marginRight={hasTrees ? 2 : 0}>
           <Button key={`${pin}trace`} plain dimColor={!isOn} hover={{ color: C.blue }} onPress={() => void update($, isTraced, v => !v)}>
             {isOn ? '경로 강조 끄기' : '경로 강조'}
           </Button>
         </Box>
+        {hasTrees && (
+          <Box key={`${pin}trees-bar`}>
+            <Button key={`${pin}trees`} plain dimColor={!isTreeList} hover={{ color: C.blue }} onPress={() => void toggleTrees($).catch(() => {})}>
+              {`⑂ 워크트리 ${known.trees.length}개`}
+            </Button>
+          </Box>
+        )}
       </Box>,
+      // like the uncommitted card, the list sits in place only
+      !pin && hasTrees && isTreeList && treesCard(),
       changed > 0 && (
         <Box key={`${pin}dirty-bar`}>
           <Text color={C.yellow}>◌ </Text>
@@ -379,7 +455,7 @@ export const register: Register = on => {
           ) : (
             <Box flexDirection="column">
               {commit(row, '')}
-              {openHash === row.hash && shown?.hash === row.hash && card(shown, row.short)}
+              {openHash === row.hash && shown?.hash === row.hash && card(shown, row)}
             </Box>
           ),
         )}
