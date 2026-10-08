@@ -182,6 +182,22 @@ test('outside a repo the pane says so', async ($, on) => {
   expect(await ui.find({ text: 'git 저장소가 아니에요' })).toBeDefined()
 })
 
+test('a pane the desktop draws with no scroll window still draws (it scrolls itself)', async ($, on) => {
+  on('process.run', async (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'log' ? LOG : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  const { scroll: _, ...bare } = PROPS
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: bare as unknown as typeof PROPS, requestId: 'git-graph' })
+    expect(await ui.find({ type: 'Text', text: 'root commit' })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
 test('parseShow splits the message from the numstat rows', () => {
   const d = parseShow('abc1234', 'Title line\n\nbody text\n\x1e\n3\t1\tsrc/a.ts\n-\t-\tlogo.png\n')
   expect(d.body).toBe('Title line\n\nbody text')
@@ -300,18 +316,20 @@ test('the uncommitted line opens a card of changed files; a file inserts @path, 
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('session.start', async (_, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
-  expect(await ui.find({ key: 'ask:commit-message' })).toBeUndefined()
-  await ui.press({ key: 'dirty' })
-  expect((await ui.find({ key: 'd:0' }))?.text).toBe('a.ts')
-  expect((await ui.find({ key: 'd:1' }))?.text).toBe('b.txt')
-  expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('  new')
-  await ui.press({ key: 'd:0' })
-  await ui.press({ key: 'ask:commit-message' })
-  expect(fills).toEqual([{ text: '@src/a.ts ', mode: 'insert' }, { text: '지금 변경을 커밋 메시지로 정리해줘', mode: 'replace' }])
-  await ui.press({ key: 'dirty' })
-  expect(await ui.find({ key: 'd:0' })).toBeUndefined()
-  await ui.unmount()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: PROPS, requestId: 'git-graph' })
+    expect(await ui.find({ key: 'ask:commit-message' })).toBeUndefined()
+    await ui.press({ key: 'dirty' })
+    expect((await ui.find({ key: 'd:0' }))?.text).toBe('a.ts')
+    expect((await ui.find({ key: 'd:1' }))?.text).toBe('b.txt')
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('  new')
+    await ui.press({ key: 'd:0' })
+    await ui.press({ key: 'ask:commit-message' })
+    expect(fills.splice(0)).toEqual([{ text: '@src/a.ts ', mode: 'insert' }, { text: '지금 변경을 커밋 메시지로 정리해줘', mode: 'replace' }])
+    await ui.press({ key: 'dirty' })
+    expect(await ui.find({ key: 'd:0' })).toBeUndefined()
+    await ui.unmount()
+  }
 })
 
 // HEAD sits on h1; x1 is a side tip off the same parent p
@@ -340,21 +358,23 @@ test('the 경로 강조 toggle grays rows off the HEAD path, in the top bar and 
   on('session.start', async (_, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   const color = async (ui: { findAll: (q: { type: string; text: string }) => Promise<{ text: string; props: Record<string, unknown> }[]> }, subject: string) => (await ui.findAll({ type: 'Text', text: subject })).find(t => t.text === subject)?.props.color
-  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
-  expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조')
-  expect(await color(ui, 'off the path')).toBe('#abb2bf')
-  await ui.press({ key: 'trace' })
-  expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조 끄기')
-  expect(await color(ui, 'off the path')).toBe('#5c6370')
-  expect(await color(ui, 'on the path')).not.toBe('#5c6370')
-  expect(await color(ui, 'root')).not.toBe('#5c6370')
-  await ui.press({ key: 'trace' })
-  expect(await color(ui, 'off the path')).toBe('#abb2bf')
-  await ui.unmount()
-  const down = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: { ...PROPS, scroll: { offset: 5, bodyRows: 3 } }, requestId: 'git-graph' })
-  expect(await down.find({ key: 'pin:trace' })).toBeDefined()
-  expect(await down.find({ key: 'pin:remote' })).toBeDefined()
-  await down.unmount()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: PROPS, requestId: 'git-graph' })
+    expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조')
+    expect(await color(ui, 'off the path')).toBe('#abb2bf')
+    await ui.press({ key: 'trace' })
+    expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조 끄기')
+    expect(await color(ui, 'off the path')).toBe('#5c6370')
+    expect(await color(ui, 'on the path')).not.toBe('#5c6370')
+    expect(await color(ui, 'root')).not.toBe('#5c6370')
+    await ui.press({ key: 'trace' })
+    expect(await color(ui, 'off the path')).toBe('#abb2bf')
+    await ui.unmount()
+    const down = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: { ...PROPS, scroll: { offset: 5, bodyRows: 3 } }, requestId: 'git-graph' })
+    expect(await down.find({ key: 'pin:trace' })).toBeDefined()
+    expect(await down.find({ key: 'pin:remote' })).toBeDefined()
+    await down.unmount()
+  }
 })
 
 test('grown names the branches that fell further behind, by how much', () => {

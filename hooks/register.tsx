@@ -170,11 +170,13 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
+    // a remote surface (the desktop) scrolls its pane itself and may send no window: read it as the top
+    const scroll = e.props.scroll ?? { offset: 0, bodyRows: e.viewport?.rows ?? 30 }
     const msg = await read($, note)
 
     if (msg)
       return (
-        <Box height={e.props.scroll.bodyRows} justifyContent="center" alignItems="center">
+        <Box height={scroll.bodyRows} justifyContent="center" alignItems="center">
           <Text color={C.white}>{msg}</Text>
         </Box>
       )
@@ -356,7 +358,7 @@ export const register: Register = on => {
     // Scrolled down, a copy of the top lines sits over the window's first rows, drawn at
     // the offset the engine scrolled to (a scroll asks for a new drawing), then a ┊ gap.
     // ponytail: rows of an open card above HEAD are not counted, so HEAD may pin a little late
-    const offset = e.props.scroll.offset
+    const offset = scroll.offset
     const above = top('').filter(Boolean).length
     const headAt = rows.findIndex(r => r.isHead)
     const head = rows[headAt]
