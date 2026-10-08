@@ -9,6 +9,7 @@ import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/promp
 import { MINE_CAP, addMine, moved } from '../core/mine.ts'
 import { parseShow } from '../core/show.ts'
 import { C } from '../core/theme.ts'
+import { breath, dotCells, splitDot } from '../core/pulse.ts'
 
 const S = '\x1f'
 const NOW = 1_800_000_000_000
@@ -509,5 +510,68 @@ test('원격 확인 fetches without prompts, toasts new commits once, one toast 
   await ui.press({ key: 'remote' })
   await clock.advance(180_000)
   expect(fetches).toHaveLength(4)
+  await ui.unmount()
+})
+
+test('the HEAD pulse: frames breathe between blue and a dim blue, encode as one ● cell, and the dot splits out of a graph row', () => {
+  const fgs = breath(15)
+  expect(fgs).toHaveLength(15)
+  expect(fgs[0]).toBe(Math.min(...fgs))
+  expect(Math.max(...fgs)).toBeLessThanOrEqual(0x61afef)
+  expect(new Set(fgs).size).toBe(8)
+  // the dimmest step sits closer to the band than the blue is
+  expect((fgs[0] ?? 0) & 255).toBeLessThan(0xef)
+  // 0x25cf, 0x61afef, 0x3e4451 as little-endian u32, base64
+  expect(dotCells(0x61afef)).toBe('zyUAAO+vYQBRRD4A')
+  const red = { text: '●─', color: '#f00' }
+  expect(splitDot([{ text: '│ ' }, { text: '┿●─╮', color: '#0f0' }, { text: ' ' }])).toEqual({
+    before: [{ text: '│ ' }, { text: '┿', color: '#0f0' }],
+    after: [{ text: '─╮', color: '#0f0' }, { text: ' ' }],
+  })
+  expect(splitDot([red])).toEqual({ before: [], after: [{ text: '─', color: '#f00' }] })
+  expect(splitDot([{ text: '┿ ' }])).toBeNull()
+})
+
+test('HEAD pulses as a Raster on the terminal and stays a plain ● elsewhere; a timer blits frames until blit is denied', async ($, on) => {
+  const clock = mock.clock(on)
+  const blits: { requestId: string; key: string; cells?: string }[] = []
+  let isMounted = true
+  on('ui.blit', async (_, e) => {
+    blits.push({ requestId: e.requestId, key: e.key, cells: 'cells' in e ? e.cells : undefined })
+    return { value: isMounted ? {} : { deny: 'not mounted' } }
+  })
+  on('process.run', async (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'log' ? LOG : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  // desktop: no Raster, the ● stays in the graph text
+  const flat = await $.ui.mount({ plugin: 'git-graph', surface: 'desktop', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  expect(await flat.find({ type: 'Raster' })).toBeUndefined()
+  expect(await flat.find({ type: 'Text', text: '●' })).toBeDefined()
+  await flat.unmount()
+  await clock.advance(1000)
+  expect(blits).toHaveLength(0)
+  // terminal: one 1x1 Raster, keyed, and no ● left in the text
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  const dot = await ui.find({ type: 'Raster', key: 'pulse' })
+  expect(dot?.props).toMatchObject({ columns: 1, rows: 1 })
+  expect(await ui.find({ type: 'Text', text: '●' })).toBeUndefined()
+  // a second drawing starts no second timer
+  await ui.press({ key: 'trace' })
+  await ui.press({ key: 'trace' })
+  await clock.advance(80 * 15)
+  expect(blits).toHaveLength(15)
+  expect(blits.every(b => b.requestId === 'git-graph' && b.key === 'pulse')).toBe(true)
+  expect(new Set(blits.map(b => b.cells)).size).toBe(8)
+  // denied: it gives up after a few misses and blits no more
+  isMounted = false
+  await clock.advance(80 * 10)
+  const stopped = blits.length
+  expect(stopped).toBe(15 + 5)
+  await clock.advance(80 * 10)
+  expect(blits).toHaveLength(stopped)
   await ui.unmount()
 })

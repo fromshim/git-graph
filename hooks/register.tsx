@@ -10,6 +10,7 @@ import { addMine, moved } from '../core/mine.ts'
 import { grown } from '../core/remote.ts'
 import { pointers, track, trees } from '../core/refs.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
+import { PULSE_MS, breath, dotCells, splitDot } from '../core/pulse.ts'
 import { parseShow } from '../core/show.ts'
 import { C, chip, personColor } from '../core/theme.ts'
 import type { Seg } from '../core/theme.ts'
@@ -94,6 +95,34 @@ async function toggleChanges($: EngineInterface) {
   let isOpening = false
   await update($, isDirtyOpen, prev => (isOpening = !prev))
   if (isOpening) await loadChanges($)
+}
+
+// HEAD's ● breathes: frames are made once, a timer blits the next one (no redraw)
+const FRAMES = breath().map(fg => dotCells(fg))
+const PULSE_KEY = 'pulse'
+const MAX_MISSES = 5
+let pulse: Timer | undefined
+let phase = 0
+let misses = 0
+
+function stopPulse() {
+  pulse?.cancel()
+  pulse = undefined
+}
+
+// never throws; a few denials in a row (the pane is closed or not mounted) stop the timer, the next drawing restarts it
+async function beat($: EngineInterface) {
+  phase = (phase + 1) % FRAMES.length
+  const r = await $.ui.blit({ requestId: PANE, key: PULSE_KEY, cells: FRAMES[phase] ?? '' }).catch(() => ({ deny: 'blit failed' }))
+  misses = r.deny ? misses + 1 : 0
+  if (misses >= MAX_MISSES) stopPulse()
+}
+
+// one timer at most
+function startPulse($: EngineInterface) {
+  if (pulse) return
+  misses = 0
+  pulse = $.clock.every(PULSE_MS, () => void beat($))
 }
 
 const FETCH_EVERY = 60_000
@@ -184,6 +213,12 @@ export const register: Register = on => {
     return ran
   })
 
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    const closed = await next(e)
+    stopPulse()
+    return closed
+  })
+
   on('command.run', { command: 'git-graph' }, async $ => {
     if ((await $.ui.panes()).some(p => p.id === PANE && p.isPlaced && p.isShown)) {
       await $.ui.close({ id: PANE })
@@ -194,7 +229,11 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const els = $.ui.resolve(e)
+    const { Box, Text, Button } = els
+    // the pulsing dot is the terminal's alone (Raster); elsewhere HEAD keeps the plain ●
+    // (every table is completed with the others' names, drawn as fragments: ask the surface, not the table)
+    const Raster = e.surface === 'terminal' && 'Raster' in els ? els.Raster : undefined
     // a remote surface (the desktop) scrolls its pane itself and may send no window: read it as the top
     const scroll = e.props.scroll ?? { offset: 0, bodyRows: e.viewport?.rows ?? 30 }
     const msg = await read($, note)
@@ -401,6 +440,17 @@ export const register: Register = on => {
       // off the path to HEAD: graph, chips and subject go gray
       const isOff = kin !== null && !kin.has(row.hash)
       const paint = (segs: Seg[]) => (isOff ? dim(segs) : segs)
+      // the main pane's HEAD row only: the pinned copy keeps the plain ● (its key would repeat)
+      const split = Raster && row.isHead && !pin ? splitDot(row.graph) : null
+      if (split) startPulse($)
+      const graph =
+        Raster && split
+          ? [
+              ...(split.before.length > 0 ? [<Text>{split.before.map(seg)}</Text>] : []),
+              <Raster key={PULSE_KEY} columns={1} rows={1} cells={FRAMES[phase] ?? ''} />,
+              ...(split.after.length > 0 ? [<Text>{split.after.map(seg)}</Text>] : []),
+            ]
+          : [<Text>{paint(row.graph).map(seg)}</Text>]
       return (
         <Box
           key={`${pin}${row.hash}`}
@@ -408,7 +458,7 @@ export const register: Register = on => {
           hover={row.isHead || isOpen ? undefined : { backgroundColor: C.hover }}
         >
           <Box flexShrink={0}>
-            <Text>{paint(row.graph).map(seg)}</Text>
+            {graph}
           </Box>
           <Box flexGrow={1} flexShrink={1} overflow="hidden">
             <Text wrap="truncate-end">
