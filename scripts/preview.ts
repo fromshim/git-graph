@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { SEP } from '../core/commands.ts'
 import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
+import { review } from '../core/prompt.ts'
 import { splitDot } from '../core/pulse.ts'
 import { pointers, refChips, track } from '../core/refs.ts'
 import { C, chip, personColor, tint } from '../core/theme.ts'
@@ -49,13 +50,18 @@ const REFS: GraphRefs = {
   ],
 }
 const CHANGED = 3
-const MINE = new Set([H(1), H(5)]) // commits made in this session: marked ✦
-const OPEN = H(4)
-const REF_OPEN = H(1) // the row whose ref list is open
 const TREE_CHANGES: Record<string, string> = { '/work/app': '3개', '/work/hotfix': '0개' }
-const CARD = {
-  body: ['Merge pull request #12 from feat/export', 'Adds the SVG exporter and a --width flag.'],
-  files: [['64', '0', 'core/export.ts'], ['12', '3', 'hooks/register.tsx'], ['9', '0', 'tests/export.test.ts'], ['2', '2', 'README.md']],
+type CardData = { body: string[]; files: string[][] }
+// what a pane shows: which commit's card is open, whose ref list is open, which commits are marked ✦ (made in this session)
+type View = { open: string; refOpen: string; mine: Set<string>; card: CardData; hot?: string }
+const VIEW: View = {
+  open: H(4),
+  refOpen: H(1),
+  mine: new Set([H(1), H(5)]),
+  card: {
+    body: ['Merge pull request #12 from feat/export', 'Adds the SVG exporter and a --width flag.'],
+    files: [['64', '0', 'core/export.ts'], ['12', '3', 'hooks/register.tsx'], ['9', '0', 'tests/export.test.ts'], ['2', '2', 'README.md']],
+  },
 }
 
 // ---- tiny SVG layer: every glyph sits at column * CHAR_W, so no font advance matters ----
@@ -151,7 +157,7 @@ function svg(cols: number, rows: number, body: string[], title?: string): string
 }
 
 // ---- the pane, composed like hooks/register.tsx ----
-function preview(): string {
+function pane(v: View): { out: string[]; y: number } {
   const { rows, lanes } = layout(LOG, NOW, REFS, Infinity)
   const out: string[] = []
   let y = 0
@@ -163,7 +169,7 @@ function preview(): string {
   if (CHANGED > 0) out.push(text(0, y, '◌ ', { fill: C.yellow }) + text(2, y++, `커밋 안 한 변경 ${CHANGED}개`))
 
   const commit = (r: Row) => {
-    const isOpen = r.hash === OPEN
+    const isOpen = r.hash === v.open
     if (r.isHead || isOpen) out.push(rect(0, y, W, C.sel))
     const put = (col: number, s: Seg) => {
       const [m, next] = seg(col, y, s)
@@ -176,7 +182,7 @@ function preview(): string {
     let col = graph.reduce(put, 0)
     const right = W - 20
     const head = [...(r.isHead ? [chip('HEAD', C.blue)] : []), ...r.refs.map(button)]
-    const items: Seg[] = [...head.flatMap(s => [s, { text: ' ' }]), ...(MINE.has(r.hash) ? [{ text: '✦ ', color: C.yellow }] : []), { text: r.subject, color: r.isHead ? C.white : C.fg, bold: r.isHead }]
+    const items: Seg[] = [...head.flatMap(s => [s, { text: ' ' }]), ...(v.mine.has(r.hash) ? [{ text: '✦ ', color: C.yellow }] : []), { text: r.subject, color: r.isHead ? C.white : C.fg, bold: r.isHead }]
     fit(items, right - col).reduce(put, col)
     // right block (register.tsx): margin 1, author chip, short hash, age
     const author = ` ${r.author.padEnd(AUTHOR_CELLS)} `
@@ -198,9 +204,13 @@ function preview(): string {
       continue
     }
     commit(r)
-    if (r.hash === REF_OPEN) y = refCard(out, y, r)
-    if (r.hash === OPEN) y = card(out, y)
+    if (r.hash === v.refOpen) y = refCard(out, y, r)
+    if (r.hash === v.open) y = card(out, y, v.card, v.hot)
   }
+  return { out, y }
+}
+const preview = () => {
+  const { out, y } = pane(VIEW)
   return svg(W, y, out, 'Git graph')
 }
 
@@ -246,19 +256,19 @@ function refCard(out: string[], y0: number, r: Row): number {
 }
 
 // the expanded commit card (register.tsx `card`)
-function card(out: string[], y0: number): number {
-  const adds = CARD.files.reduce((n, f) => n + Number(f[0]), 0)
-  const dels = CARD.files.reduce((n, f) => n + Number(f[1]), 0)
-  const [title = '', ...more] = CARD.body
+function card(out: string[], y0: number, data: CardData, hot?: string): number {
+  const adds = data.files.reduce((n, f) => n + Number(f[0]), 0)
+  const dels = data.files.reduce((n, f) => n + Number(f[1]), 0)
+  const [title = '', ...more] = data.body
   const lines: ((x: number, y: number) => string)[] = [
     (x, y) => text(x, y, title, { fill: C.white, bold: true }),
     ...more.map(m => (x: number, y: number) => text(x, y, m)),
     (x, y) => {
-      const label = `파일 ${CARD.files.length}개 `
+      const label = `파일 ${data.files.length}개 `
       const add = `+${adds}`
       return text(x, y, label, { fill: C.gray }) + text(x + width(label), y, add, { fill: C.green }) + text(x + width(label) + add.length + 1, y, `−${dels}`, { fill: C.red })
     },
-    ...CARD.files.map(([a = '', d = '', path = '']) => (x: number, y: number) => {
+    ...data.files.map(([a = '', d = '', path = '']) => (x: number, y: number) => {
       const cut = path.lastIndexOf('/') + 1
       const ad = `+${a}`.padStart(5)
       const de = ` −${d}`.padEnd(6)
@@ -270,11 +280,61 @@ function card(out: string[], y0: number): number {
       return ['설명', '리뷰', 'HEAD 와 비교'].map(b => {
         const at = c
         c += width(b) + 3
-        return rect(at, y, width(b) + 2, C.sel) + text(at + 1, y, b)
+        return rect(at, y, width(b) + 2, C.sel) + text(at + 1, y, b, b === hot ? { fill: C.blue } : {})
       }).join('')
     },
   ]
   return frame(out, y0, lines)
+}
+
+// ---- Claude Code session: the conversation on the left, the pane on the right ----
+const LEFT = 56 // conversation columns, including the one-column gutter before the divider
+function session(): string {
+  const mid = H(5) // the commit whose card is open
+  const short = mid.slice(0, 7)
+  const { out: paneOut, y: rows } = pane({
+    open: mid,
+    refOpen: H(1),
+    mine: new Set([H(1), H(2), mid]),
+    card: {
+      body: ['feat(search): add a fuzzy matcher', 'Scores a query by subsequence distance.'],
+      files: [['86', '0', 'core/search.ts'], ['31', '0', 'tests/search.test.ts'], ['4', '1', 'hooks/register.tsx']],
+    },
+    hot: '리뷰',
+  })
+  const out: string[] = [`<g transform="translate(${num((LEFT + 1) * CHAR_W)},0)">${paneOut.join('')}</g>`]
+  for (let y = 0; y < rows; y++) out.push(text(LEFT, y, '│', { fill: C.sel }))
+  const line = (y: number, parts: [string, Style?][], col = 0) => {
+    let c = col
+    for (const [s, st] of parts) (out.push(text(c, y, s, st)), (c += width(s)))
+  }
+  const dot = { fill: C.green }
+  // Latin runs and Hangul runs never share a line after a Hangul run: a Hangul run draws narrower than its cells, so anything after it would float
+  const g = { fill: C.gray }
+  line(0, [['> ', g], ['검색어와 일치한 글자를 강조해줘', { fill: C.white }]])
+  line(2, [['● ', dot], ['Read', { bold: true }], ['(core/search.ts)', g]])
+  line(3, [['  ⎿  Read 42 lines', g]])
+  line(5, [['● ', dot], ['Update', { bold: true }], ['(core/search.ts)', g]])
+  line(6, [['  ⎿  Updated core/search.ts with 18 additions', g]])
+  line(8, [['● ', dot], ['Bash', { bold: true }], ['(git commit -m "feat(search): add a', g]])
+  line(9, [['    fuzzy matcher")', g]])
+  line(10, [[`  ⎿  [feat/search ${short}] 1 file changed`, g]])
+  line(12, [['● ', dot], ['Task', { bold: true }], ['(fix login bug)', g]])
+  line(13, [['  ⎿  Done (1 commit in the hotfix worktree)', g]])
+  line(15, [['● ', dot], ['퍼지 매처를 추가하고 커밋했습니다', {}]])
+  line(16, [['  하위 에이전트는 로그인 버그를 고쳤습니다', {}]])
+  // the prompt box, filled by the 리뷰 button: the text and a cursor
+  const bottom = rows - 3
+  const inner = LEFT - 3
+  out.push(text(0, bottom, '╭' + '─'.repeat(inner) + '╮', { fill: C.gray }))
+  out.push(text(0, bottom + 1, '│', { fill: C.gray }), text(inner + 1, bottom + 1, '│', { fill: C.gray }))
+  out.push(text(0, bottom + 2, '╰' + '─'.repeat(inner) + '╯', { fill: C.gray }))
+  const ask = review(short)
+  // the cursor is a tspan in the same <text>, so it follows wherever the font's Hangul advance ends
+  out.push(text(2, bottom + 1, '> ', { fill: C.gray }))
+  out.push(text(4, bottom + 1, ask, { fill: C.white }).replace(/<\/text>$/, `<tspan fill="${C.fg}">\u2588</tspan></text>`))
+  out.push(text(2, bottom + 3, '? 단축키 보기', { fill: C.gray }))
+  return svg(LEFT + 1 + W, rows + 1, out, 'Claude Code')
 }
 
 // ---- chip legend ----
@@ -313,6 +373,7 @@ function legend(lang: 'ko' | 'en'): string {
 
 mkdirSync('assets', { recursive: true })
 writeFileSync('assets/preview.svg', preview())
+writeFileSync('assets/claude.svg', session())
 writeFileSync('assets/legend.ko.svg', legend('ko'))
 writeFileSync('assets/legend.en.svg', legend('en'))
-console.log('wrote assets/preview.svg, assets/legend.ko.svg, assets/legend.en.svg')
+console.log('wrote assets/preview.svg, assets/claude.svg, assets/legend.ko.svg, assets/legend.en.svg')
