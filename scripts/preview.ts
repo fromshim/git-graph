@@ -4,8 +4,9 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { SEP } from '../core/commands.ts'
 import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
-import { refChips, track } from '../core/refs.ts'
-import { C, chip, personColor } from '../core/theme.ts'
+import { splitDot } from '../core/pulse.ts'
+import { pointers, refChips, track } from '../core/refs.ts'
+import { C, chip, personColor, tint } from '../core/theme.ts'
 import type { Seg } from '../core/theme.ts'
 import type { GraphRefs } from '../types'
 
@@ -50,6 +51,8 @@ const REFS: GraphRefs = {
 const CHANGED = 3
 const MINE = new Set([H(1), H(5)]) // commits made in this session: marked ✦
 const OPEN = H(4)
+const REF_OPEN = H(1) // the row whose ref list is open
+const TREE_CHANGES: Record<string, string> = { '/work/app': '3개', '/work/hotfix': '0개' }
 const CARD = {
   body: ['Merge pull request #12 from feat/export', 'Adds the SVG exporter and a --width flag.'],
   files: [['64', '0', 'core/export.ts'], ['12', '3', 'hooks/register.tsx'], ['9', '0', 'tests/export.test.ts'], ['2', '2', 'README.md']],
@@ -106,6 +109,9 @@ function text(col: number, row: number, s: string, st: Style = {}): string {
 const rect = (col: number, row: number, cols: number, fill: string, rows = 1) =>
   `<rect x="${num(col * CHAR_W)}" y="${row * ROW_H}" width="${num(cols * CHAR_W)}" height="${rows * ROW_H}" fill="${fill}"/>`
 
+// a ref chip as register.tsx draws it: a Button on a dark tint of the chip's color, a light label (a terminal's default foreground is drawn as C.white)
+const button = (s: Seg): Seg => ({ text: s.text, backgroundColor: tint(s.backgroundColor ?? C.gray), color: C.white })
+
 // a Seg (graph cell run, chip) at a column; its background first; returns the markup and the next column
 function seg(col: number, row: number, s: Seg): [string, number] {
   const w = width(s.text)
@@ -149,8 +155,8 @@ function preview(): string {
   const { rows, lanes } = layout(LOG, NOW, REFS, Infinity)
   const out: string[] = []
   let y = 0
-  // top lines (register.tsx `top`): one bar with the fold button (once lanes > 3), 원격 확인, 경로 강조 and ⑂ 워크트리 N개, then the uncommitted count
-  const bar = [...(lanes > 3 ? ['◂ 가지 접기'] : []), '원격 확인', '경로 강조', `⑂ 워크트리 ${REFS.trees.length}개`]
+  // top lines (register.tsx `top`): one bar with the fold button (once lanes > 3), 원격 확인 and 경로 강조, then the uncommitted count
+  const bar = [...(lanes > 3 ? ['◂ 가지 접기'] : []), '원격 확인', '경로 강조']
   let at = 0
   for (const b of bar) (out.push(text(at, y, b, { opacity: 0.55 })), (at += width(b) + 2))
   y++
@@ -164,9 +170,12 @@ function preview(): string {
       out.push(m)
       return next
     }
-    let col = r.graph.reduce(put, 0)
+    // HEAD's dot is the bright yellow glow (a still frame of the pulse)
+    const dot = r.isHead ? splitDot(r.graph) : null
+    const graph = dot ? [...dot.before, { text: '●', color: C.glow }, ...dot.after] : r.graph
+    let col = graph.reduce(put, 0)
     const right = W - 20
-    const head = r.isHead ? [chip('HEAD', C.blue), ...r.refs] : r.refs
+    const head = [...(r.isHead ? [chip('HEAD', C.blue)] : []), ...r.refs.map(button)]
     const items: Seg[] = [...head.flatMap(s => [s, { text: ' ' }]), ...(MINE.has(r.hash) ? [{ text: '✦ ', color: C.yellow }] : []), { text: r.subject, color: r.isHead ? C.white : C.fg, bold: r.isHead }]
     fit(items, right - col).reduce(put, col)
     // right block (register.tsx): margin 1, author chip, short hash, age
@@ -189,52 +198,83 @@ function preview(): string {
       continue
     }
     commit(r)
+    if (r.hash === REF_OPEN) y = refCard(out, y, r)
     if (r.hash === OPEN) y = card(out, y)
   }
   return svg(W, y, out, 'Git graph')
 }
 
-// the expanded commit card (register.tsx `card`): round border in C.sel, marginLeft 2, paddingX 1
-function card(out: string[], y0: number): number {
+// a round border in C.sel, marginLeft 2, paddingX 1: `lines` draw inside, one per row
+function frame(out: string[], y0: number, lines: ((x: number, y: number) => string)[]): number {
   const L = 2
   const inner = W - L - 2
-  const adds = CARD.files.reduce((n, f) => n + Number(f[0]), 0)
-  const dels = CARD.files.reduce((n, f) => n + Number(f[1]), 0)
-  const [title = '', ...more] = CARD.body
   const edge = (y: number, l: string, r: string) => out.push(text(L, y, l + '─'.repeat(inner) + r, { fill: C.sel }))
-  const side = (y: number) => out.push(text(L, y, '│', { fill: C.sel }), text(W - 1, y, '│', { fill: C.sel }))
   let y = y0
   edge(y++, '╭', '╮')
   const body: string[] = []
-  const x = L + 2
-  const line = (f: (y: number) => string) => (side(y), body.push(f(y)), y++)
-  line(r => text(x, r, title, { fill: C.white, bold: true }))
-  for (const m of more) line(r => text(x, r, m))
-  line(r => {
-    const label = `파일 ${CARD.files.length}개 `
-    const add = `+${adds}`
-    return text(x, r, label, { fill: C.gray }) + text(x + width(label), r, add, { fill: C.green }) + text(x + width(label) + add.length + 1, r, `−${dels}`, { fill: C.red })
-  })
-  for (const [a = '', d = '', path = ''] of CARD.files)
-    line(r => {
-      const cut = path.lastIndexOf('/') + 1
-      const ad = `+${a}`.padStart(5)
-      const de = ` −${d}`.padEnd(6)
-      return text(x, r, ad, { fill: C.green }) + text(x + 5, r, de, { fill: C.red }) + text(x + 11, r, path.slice(0, cut), { fill: C.gray }) + text(x + 11 + cut, r, path.slice(cut))
-    })
-  // the hand-to-Claude buttons (register.tsx): 설명, 리뷰, HEAD 와 비교
-  line(r => {
-    let c = x
-    // each on a C.sel block with one cell of padding, one cell apart
-    return ['설명', '리뷰', 'HEAD 와 비교'].map(b => {
-      const at = c
-      c += width(b) + 3
-      return rect(at, r, width(b) + 2, C.sel) + text(at + 1, r, b)
-    }).join('')
-  })
+  for (const f of lines) {
+    out.push(text(L, y, '│', { fill: C.sel }), text(W - 1, y, '│', { fill: C.sel }))
+    body.push(f(L + 2, y++))
+  }
   edge(y++, '╰', '╯')
   out.push(...body)
   return y
+}
+
+// the ref list under a row (register.tsx `refCard`): branches with their origin state, remotes, tags, worktrees
+function refCard(out: string[], y0: number, r: Row): number {
+  const p = pointers(r.decor, r.hash, REFS)
+  const lines: ((x: number, y: number) => string)[] = [
+    ...p.locals.map(l => (x: number, y: number) => text(x, y, `⎇ ${l.name}`, { fill: C.green }) + text(x + width(`⎇ ${l.name}`), y, `  ${l.sync}`, { fill: C.gray })),
+    ...p.remotes.map(n => (x: number, y: number) => text(x, y, `⌂ ${n}`, { fill: C.red })),
+    ...p.tags.map(n => (x: number, y: number) => text(x, y, `# ${n}`, { fill: C.orange })),
+    ...p.trees.flatMap(t => [
+      (x: number, y: number) => {
+        const name = `⑂ ${t.name}`
+        const branch = t.branch ? `  ⎇ ${t.branch}` : `  ${t.head.slice(0, 7)} (detached)`
+        return (
+          text(x, y, name, { fill: t.isSelf ? C.glow : C.purple, bold: true }) +
+          text(x + width(name), y, branch, { fill: t.branch ? C.green : C.yellow }) +
+          (t.isSelf ? text(x + width(name + branch), y, '  이 세션', { fill: C.glow }) : '')
+        )
+      },
+      (x: number, y: number) => text(x, y, `  ${t.path}`, { fill: C.gray }),
+      (x: number, y: number) => text(x, y, `  변경 ${TREE_CHANGES[t.path] ?? '…'}`, { fill: C.gray }),
+    ]),
+  ]
+  return frame(out, y0, lines)
+}
+
+// the expanded commit card (register.tsx `card`)
+function card(out: string[], y0: number): number {
+  const adds = CARD.files.reduce((n, f) => n + Number(f[0]), 0)
+  const dels = CARD.files.reduce((n, f) => n + Number(f[1]), 0)
+  const [title = '', ...more] = CARD.body
+  const lines: ((x: number, y: number) => string)[] = [
+    (x, y) => text(x, y, title, { fill: C.white, bold: true }),
+    ...more.map(m => (x: number, y: number) => text(x, y, m)),
+    (x, y) => {
+      const label = `파일 ${CARD.files.length}개 `
+      const add = `+${adds}`
+      return text(x, y, label, { fill: C.gray }) + text(x + width(label), y, add, { fill: C.green }) + text(x + width(label) + add.length + 1, y, `−${dels}`, { fill: C.red })
+    },
+    ...CARD.files.map(([a = '', d = '', path = '']) => (x: number, y: number) => {
+      const cut = path.lastIndexOf('/') + 1
+      const ad = `+${a}`.padStart(5)
+      const de = ` −${d}`.padEnd(6)
+      return text(x, y, ad, { fill: C.green }) + text(x + 5, y, de, { fill: C.red }) + text(x + 11, y, path.slice(0, cut), { fill: C.gray }) + text(x + 11 + cut, y, path.slice(cut))
+    }),
+    // the hand-to-Claude buttons (register.tsx): 설명, 리뷰, HEAD 와 비교, each on a C.sel block with one cell of padding, one cell apart
+    (x, y) => {
+      let c = x
+      return ['설명', '리뷰', 'HEAD 와 비교'].map(b => {
+        const at = c
+        c += width(b) + 3
+        return rect(at, y, width(b) + 2, C.sel) + text(at + 1, y, b)
+      }).join('')
+    },
+  ]
+  return frame(out, y0, lines)
 }
 
 // ---- chip legend ----
@@ -243,11 +283,11 @@ const LEGEND: Record<'ko' | 'en', string[]> = {
   en: ['checked-out commit', 'local branch', 'same commit as origin', 'commits ahead of / behind origin', 'remote branch', 'tag', 'worktree (only when there are several)', 'this session\'s worktree', 'four or more on one commit, grouped'],
 }
 function legend(lang: 'ko' | 'en'): string {
-  const one = (decor: string, known: GraphRefs, hash = '') => refChips(decor, hash, known).chips
+  const one = (decor: string, known: GraphRefs, hash = '') => refChips(decor, hash, known).chips.map(button)
   const tree = (name: string, head: string, isSelf: boolean) => ({ name, path: `/work/${name}`, head, branch: '', isSelf })
   const none: GraphRefs = { heads: ['name'], tracks: {}, trees: [] }
   const chips: Seg[][] = [
-    [{ text: '●', color: C.blue }, chip('HEAD', C.blue)],
+    [{ text: '●', color: C.glow }, chip('HEAD', C.blue)],
     one('name', none),
     one('name, origin/name', none),
     one('name', { ...none, tracks: { name: track('[ahead 2, behind 1]') } }),
