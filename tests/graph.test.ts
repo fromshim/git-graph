@@ -575,3 +575,69 @@ test('HEAD pulses as a Raster on the terminal and stays a plain ● elsewhere; a
   expect(blits).toHaveLength(stopped)
   await ui.unmount()
 })
+
+const PANES = [{ id: 'git-graph', title: 'Git graph', isShown: true, isFocused: false, isPlaced: true }]
+
+test('a drawing that throws shows the error in the pane and toasts it once per message, on terminal and desktop', async ($, on) => {
+  const toasts: string[] = []
+  on('process.run', async (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'log' ? LOG : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  // a Button that cannot be made: the drawing throws
+  on('ui.resolve', async (_, e, next) => {
+    const els = await next(e)
+    return { ...els, Button: () => { throw new TypeError('no button') } } as never
+  })
+  on('ui.toast', async (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: PROPS, requestId: 'git-graph' })
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(texts).toEqual(['git-graph 를 그리지 못했어요', `HooksError: no button (${surface})`])
+    await ui.unmount()
+  }
+  // the same message toasts once, even across two drawings
+  expect(toasts).toEqual(['git-graph 를 그리지 못했어요: HooksError: no button (terminal)'])
+})
+
+test('no drawing request within 5s toasts once; a drawing, or a pane left undrawn, toasts nothing', async ($, on) => {
+  const clock = mock.clock(on)
+  const toasts: string[] = []
+  let isPlaced = true
+  on('process.run', async (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'log' ? LOG : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('ui.toast', async (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.panes', async () => ({ value: PANES }))
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: isPlaced ? { isPlaced: true as const } : { isPlaced: false as const, reason: 'narrow' } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  // a pane that is drawn: quiet
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  await clock.advance(20_000)
+  expect(toasts).toEqual([])
+  await ui.unmount()
+  // placed but never asked to draw
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  await clock.advance(4_000)
+  expect(toasts).toEqual([])
+  await clock.advance(2_000)
+  expect(toasts).toEqual(['git-graph: 패널 그리기 요청을 받지 못했어요 (표시 예, 배치 예)'])
+  await clock.advance(20_000)
+  expect(toasts).toHaveLength(1)
+  // waiting undrawn on a narrow terminal is normal
+  isPlaced = false
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await clock.advance(20_000)
+  expect(toasts).toHaveLength(1)
+})
