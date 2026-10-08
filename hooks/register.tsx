@@ -1,19 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
 
-import { DIFF, FETCH, FETCH_ENV, GIT, HEAD, STATUS, TOP, TRACKS, TREES, added, show } from '../core/commands.ts'
+import { DIFF, FETCH, FETCH_ENV, GIT, STATUS, TOP, TRACKS, TREES, added, show, statusIn } from '../core/commands.ts'
 import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
 import { ancestors, dim } from '../core/ancestry.ts'
 import { NEW, parseChanges } from '../core/changes.ts'
-import { addMine } from '../core/mine.ts'
+import { addMine, moved } from '../core/mine.ts'
 import { grown } from '../core/remote.ts'
-import { track, trees } from '../core/refs.ts'
+import { pointers, track, trees } from '../core/refs.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
+import { PULSE_MS, breath, dotCells, splitDot } from '../core/pulse.ts'
 import { parseShow } from '../core/show.ts'
 import { C, chip, personColor } from '../core/theme.ts'
 import type { Seg } from '../core/theme.ts'
-import type { GraphDetail, GraphLines, GraphRefs } from '../types'
+import type { GraphDetail, GraphLines, GraphRefs, GraphTree } from '../types'
 
 const PANE = 'git-graph'
 const lines = atom({ plugin: 'git-graph', key: 'lines' } as const, [])
@@ -24,6 +25,8 @@ const detail = atom({ plugin: 'git-graph', key: 'detail' } as const, null)
 const refs = atom({ plugin: 'git-graph', key: 'refs' } as const, { heads: [], tracks: {}, trees: [] })
 const wide = atom({ plugin: 'git-graph', key: 'wide' } as const, false)
 const isDirtyOpen = atom({ plugin: 'git-graph', key: 'isDirtyOpen' } as const, false)
+const isTreesOpen = atom({ plugin: 'git-graph', key: 'isTreesOpen' } as const, false)
+const treeChanges = atom({ plugin: 'git-graph', key: 'treeChanges' } as const, {})
 const changes = atom({ plugin: 'git-graph', key: 'changes' } as const, null)
 const isTraced = atom({ plugin: 'git-graph', key: 'isTraced' } as const, false)
 const isWatching = atom({ plugin: 'git-graph', key: 'isWatching' } as const, false)
@@ -58,6 +61,7 @@ async function refresh($: EngineInterface) {
   await update($, note, prev => (prev === msg ? prev : msg))
   await update($, dirty, prev => (prev === changed ? prev : changed))
   if (changed > 0 && (await read($, isDirtyOpen))) await loadChanges($)
+  if (known.trees.length > 1 && (await read($, isTreesOpen))) await loadTreeChanges($, known.trees)
   await update($, lines, prev => (prev.join('\n') === got.join('\n') ? prev : got))
 }
 
@@ -68,10 +72,57 @@ async function loadChanges($: EngineInterface) {
   await update($, changes, prev => (JSON.stringify(prev) === JSON.stringify(got) ? prev : got))
 }
 
+// uncommitted line count per worktree, only while the list is open; a failed run reads "?"
+async function loadTreeChanges($: EngineInterface, list: GraphTree[]) {
+  const got = Object.fromEntries(
+    await Promise.all(
+      list.map(async t => {
+        const r = await $.process.run(statusIn(t.path)).catch(() => undefined)
+        return [t.path, r?.exitCode === 0 ? String(r.stdout.split('\n').filter(Boolean).length) : '?'] as const
+      }),
+    ),
+  )
+  await update($, treeChanges, prev => (JSON.stringify(prev) === JSON.stringify(got) ? prev : got))
+}
+
+async function toggleTrees($: EngineInterface) {
+  let isOpening = false
+  await update($, isTreesOpen, prev => (isOpening = !prev))
+  if (isOpening) await loadTreeChanges($, (await read($, refs)).trees)
+}
+
 async function toggleChanges($: EngineInterface) {
   let isOpening = false
   await update($, isDirtyOpen, prev => (isOpening = !prev))
   if (isOpening) await loadChanges($)
+}
+
+// HEAD's ● breathes: frames are made once, a timer blits the next one (no redraw)
+const FRAMES = breath().map(fg => dotCells(fg))
+const PULSE_KEY = 'pulse'
+const MAX_MISSES = 5
+let pulse: Timer | undefined
+let phase = 0
+let misses = 0
+
+function stopPulse() {
+  pulse?.cancel()
+  pulse = undefined
+}
+
+// never throws; a few denials in a row (the pane is closed or not mounted) stop the timer, the next drawing restarts it
+async function beat($: EngineInterface) {
+  phase = (phase + 1) % FRAMES.length
+  const r = await $.ui.blit({ requestId: PANE, key: PULSE_KEY, cells: FRAMES[phase] ?? '' }).catch(() => ({ deny: 'blit failed' }))
+  misses = r.deny ? misses + 1 : 0
+  if (misses >= MAX_MISSES) stopPulse()
+}
+
+// one timer at most
+function startPulse($: EngineInterface) {
+  if (pulse) return
+  misses = 0
+  pulse = $.clock.every(PULSE_MS, () => void beat($))
 }
 
 const FETCH_EVERY = 60_000
@@ -114,9 +165,10 @@ async function toggleWatch($: EngineInterface) {
   void check($)
 }
 
-async function head($: EngineInterface) {
-  const r = await $.process.run(HEAD).catch(() => undefined)
-  return r?.exitCode === 0 ? r.stdout.trim() : ''
+// every worktree's HEAD, so a commit made in any of them (a subagent's) shows
+async function heads($: EngineInterface) {
+  const r = await $.process.run(TREES).catch(() => undefined)
+  return trees(r?.exitCode === 0 ? r.stdout : '', '')
 }
 
 async function toggle($: EngineInterface, hash: string, short: string) {
@@ -147,16 +199,24 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    // a Bash call that moved HEAD made commits: remember them for the marker
-    const before = await head($)
+    // a Bash call that moved a worktree's HEAD made commits: remember them for the marker
+    const before = await heads($)
     const ran = await next(e)
-    const after = await head($)
-    if (after && after !== before) {
-      const r = await $.process.run(added(before, after)).catch(() => undefined)
-      if (r?.exitCode === 0) await update($, mine, prev => addMine(prev, r.stdout)).catch(() => {})
-    }
+    const outs = await Promise.all(
+      moved(before, await heads($)).map(async m => {
+        const r = await $.process.run(added(m.before, m.after)).catch(() => undefined)
+        return r?.exitCode === 0 ? r.stdout : ''
+      }),
+    )
+    if (outs.some(Boolean)) await update($, mine, prev => outs.reduce(addMine, prev)).catch(() => {})
     void refresh($).catch(() => {})
     return ran
+  })
+
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    const closed = await next(e)
+    stopPulse()
+    return closed
   })
 
   on('command.run', { command: 'git-graph' }, async $ => {
@@ -169,22 +229,32 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const els = $.ui.resolve(e)
+    const { Box, Text, Button } = els
+    // the pulsing dot is the terminal's alone (Raster); elsewhere HEAD keeps the plain ●
+    // (every table is completed with the others' names, drawn as fragments: ask the surface, not the table)
+    const Raster = e.surface === 'terminal' && 'Raster' in els ? els.Raster : undefined
+    // a remote surface (the desktop) scrolls its pane itself and may send no window: read it as the top
+    const scroll = e.props.scroll ?? { offset: 0, bodyRows: e.viewport?.rows ?? 30 }
     const msg = await read($, note)
 
     if (msg)
       return (
-        <Box height={e.props.scroll.bodyRows} justifyContent="center" alignItems="center">
+        <Box height={scroll.bodyRows} justifyContent="center" alignItems="center">
           <Text color={C.white}>{msg}</Text>
         </Box>
       )
 
     const isWide = await read($, wide)
-    const { rows, lanes } = layout(await read($, lines), Date.now(), await read($, refs), isWide ? Infinity : FOLDED_LANES)
+    const known = await read($, refs)
+    const { rows, lanes } = layout(await read($, lines), Date.now(), known, isWide ? Infinity : FOLDED_LANES)
     const changed = await read($, dirty)
     const openHash = await read($, open)
     const shown = await read($, detail)
     const isChangesOpen = await read($, isDirtyOpen)
+    const isTreeList = await read($, isTreesOpen)
+    const treeStatus = await read($, treeChanges)
+    const hasTrees = known.trees.length > 1
     const files = await read($, changes)
     const isWatch = await read($, isWatching)
     const isOn = await read($, isTraced)
@@ -205,7 +275,30 @@ export const register: Register = on => {
       </Box>
     )
 
-    const card = (d: GraphDetail, short: string) => {
+    // what points at this commit: each branch with its origin state, remotes, tags, worktrees
+    const pointerLines = (row: Row) => {
+      const p = pointers(row.decor, row.hash, known)
+      return [
+        ...p.locals.map(l => (
+          <Text key={`ref:b:${l.name}`}>
+            <Text color={C.green}>{`⎇ ${l.name}`}</Text>
+            <Text color={C.gray}>{`  ${l.sync}`}</Text>
+          </Text>
+        )),
+        ...p.remotes.map(r => <Text key={`ref:r:${r}`} color={C.red}>{`⌂ ${r}`}</Text>),
+        ...p.tags.map(t => <Text key={`ref:t:${t}`} color={C.orange}>{`# ${t}`}</Text>),
+        ...p.trees.map(t => (
+          <Text key={`ref:w:${t.path}`}>
+            <Text color={t.isSelf ? C.blue : C.purple}>{`⑂ ${t.name}`}</Text>
+            <Text color={C.gray}>{`  ${t.path}`}</Text>
+            {t.isSelf && <Text color={C.blue}>  이 세션</Text>}
+          </Text>
+        )),
+      ]
+    }
+
+    const card = (d: GraphDetail, row: Row) => {
+      const short = row.short
       const [title = '', ...rest] = d.body.split('\n')
       const more = rest.join('\n').trim()
       const adds = d.files.reduce((n, f) => n + (Number(f.add) || 0), 0)
@@ -222,6 +315,7 @@ export const register: Register = on => {
                 {`파일 ${d.files.length}개 `}
                 <Text color={C.green}>{`+${adds}`}</Text> <Text color={C.red}>{`−${dels}`}</Text>
               </Text>
+              {pointerLines(row)}
               {d.files.slice(0, MAX_FILES).map((f, i) => {
                 const cut = f.path.lastIndexOf('/') + 1
                 return fileLine(`f:${d.hash}:${i}`, f.path, cut, [
@@ -281,6 +375,23 @@ export const register: Register = on => {
       )
     }
 
+    // every worktree: name, branch (or the detached head), path, uncommitted count
+    const treesCard = () => (
+      <Box key="trees-card" flexDirection="column" marginLeft={2} borderStyle="round" borderColor={C.sel} paddingX={1}>
+        {known.trees.map(t => (
+          <Box key={`tree:${t.path}`} flexDirection="column">
+            <Text>
+              <Text bold color={t.isSelf ? C.blue : C.purple}>{`⑂ ${t.name}`}</Text>
+              <Text color={t.branch ? C.green : C.yellow}>{t.branch ? `  ⎇ ${t.branch}` : `  ${t.head.slice(0, 7)} (detached)`}</Text>
+              {t.isSelf && <Text color={C.blue}>  이 세션</Text>}
+            </Text>
+            <Text color={C.gray} wrap="truncate-start">{`  ${t.path}`}</Text>
+            <Text color={C.gray}>{`  변경 ${treeStatus[t.path] === undefined ? '…' : treeStatus[t.path] === '?' ? '?' : `${treeStatus[t.path]}개`}`}</Text>
+          </Box>
+        ))}
+      </Box>
+    )
+
     // the top lines (fold button, uncommitted count), and the HEAD row once it scrolled out
     const top = (pin: string) => [
       <Box key={`${pin}bar`}>
@@ -297,12 +408,21 @@ export const register: Register = on => {
             {isWatch ? '원격 확인 끄기' : '원격 확인'}
           </Button>
         </Box>
-        <Box key={`${pin}trace-bar`}>
+        <Box key={`${pin}trace-bar`} marginRight={hasTrees ? 2 : 0}>
           <Button key={`${pin}trace`} plain dimColor={!isOn} hover={{ color: C.blue }} onPress={() => void update($, isTraced, v => !v)}>
             {isOn ? '경로 강조 끄기' : '경로 강조'}
           </Button>
         </Box>
+        {hasTrees && (
+          <Box key={`${pin}trees-bar`}>
+            <Button key={`${pin}trees`} plain dimColor={!isTreeList} hover={{ color: C.blue }} onPress={() => void toggleTrees($).catch(() => {})}>
+              {`⑂ 워크트리 ${known.trees.length}개`}
+            </Button>
+          </Box>
+        )}
       </Box>,
+      // like the uncommitted card, the list sits in place only
+      !pin && hasTrees && isTreeList && treesCard(),
       changed > 0 && (
         <Box key={`${pin}dirty-bar`}>
           <Text color={C.yellow}>◌ </Text>
@@ -320,6 +440,17 @@ export const register: Register = on => {
       // off the path to HEAD: graph, chips and subject go gray
       const isOff = kin !== null && !kin.has(row.hash)
       const paint = (segs: Seg[]) => (isOff ? dim(segs) : segs)
+      // the main pane's HEAD row only: the pinned copy keeps the plain ● (its key would repeat)
+      const split = Raster && row.isHead && !pin ? splitDot(row.graph) : null
+      if (split) startPulse($)
+      const graph =
+        Raster && split
+          ? [
+              ...(split.before.length > 0 ? [<Text>{split.before.map(seg)}</Text>] : []),
+              <Raster key={PULSE_KEY} columns={1} rows={1} cells={FRAMES[phase] ?? ''} />,
+              ...(split.after.length > 0 ? [<Text>{split.after.map(seg)}</Text>] : []),
+            ]
+          : [<Text>{paint(row.graph).map(seg)}</Text>]
       return (
         <Box
           key={`${pin}${row.hash}`}
@@ -327,7 +458,7 @@ export const register: Register = on => {
           hover={row.isHead || isOpen ? undefined : { backgroundColor: C.hover }}
         >
           <Box flexShrink={0}>
-            <Text>{paint(row.graph).map(seg)}</Text>
+            {graph}
           </Box>
           <Box flexGrow={1} flexShrink={1} overflow="hidden">
             <Text wrap="truncate-end">
@@ -356,7 +487,7 @@ export const register: Register = on => {
     // Scrolled down, a copy of the top lines sits over the window's first rows, drawn at
     // the offset the engine scrolled to (a scroll asks for a new drawing), then a ┊ gap.
     // ponytail: rows of an open card above HEAD are not counted, so HEAD may pin a little late
-    const offset = e.props.scroll.offset
+    const offset = scroll.offset
     const above = top('').filter(Boolean).length
     const headAt = rows.findIndex(r => r.isHead)
     const head = rows[headAt]
@@ -374,7 +505,7 @@ export const register: Register = on => {
           ) : (
             <Box flexDirection="column">
               {commit(row, '')}
-              {openHash === row.hash && shown?.hash === row.hash && card(shown, row.short)}
+              {openHash === row.hash && shown?.hash === row.hash && card(shown, row)}
             </Box>
           ),
         )}

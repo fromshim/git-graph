@@ -2,12 +2,14 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { layout } from '../core/layout.ts'
 import { grown } from '../core/remote.ts'
-import { age, refChips, track, trees } from '../core/refs.ts'
+import { age, pointers, refChips, track, trees } from '../core/refs.ts'
 import { ancestors, dim } from '../core/ancestry.ts'
 import { parseChanges } from '../core/changes.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
-import { MINE_CAP, addMine } from '../core/mine.ts'
+import { MINE_CAP, addMine, moved } from '../core/mine.ts'
 import { parseShow } from '../core/show.ts'
+import { C } from '../core/theme.ts'
+import { breath, dotCells, splitDot } from '../core/pulse.ts'
 
 const S = '\x1f'
 const NOW = 1_800_000_000_000
@@ -36,13 +38,36 @@ test('refs become chips: local+origin merged, remote and tag apart, origin/HEAD 
 test('upstream tracking and worktrees become chips', () => {
   expect([track('[ahead 2, behind 1]'), track('[behind 3]'), track('[gone]'), track('')]).toEqual(['↑2 ↓1', '↓3', '', ''])
   const list = trees('worktree /r/main\nHEAD aaa\nbranch refs/heads/main\n\nworktree /r/wt-a\nHEAD bbb\ndetached\n', '/r/wt-a')
-  expect(list).toEqual([{ name: 'main', head: 'aaa', isSelf: false }, { name: 'wt-a', head: 'bbb', isSelf: true }])
+  expect(list).toEqual([{ name: 'main', path: '/r/main', head: 'aaa', branch: 'main', isSelf: false }, { name: 'wt-a', path: '/r/wt-a', head: 'bbb', branch: '', isSelf: true }])
   const known = { heads: ['feat', 'docs/x'], tracks: { feat: '↑2' }, trees: list }
   expect(refChips('feat', 'bbb', known).chips.map(c => c.text)).toEqual([' ⑂ wt-a ', ' ⎇ feat ↑2 '])
+  // this session's own worktree is blue, the others purple
+  const bg = (hash: string) => refChips('', hash, known).chips.map(c => c.backgroundColor)
+  expect([bg('bbb'), bg('aaa')]).toEqual([[C.blue], [C.purple]])
+  // past three worktrees on one commit: the self one, then one ×N chip
+  const many = (n: number, self: number) =>
+    ({ heads: [], tracks: {}, trees: Array.from({ length: n }, (_, i) => ({ name: `w${i}`, path: `/r/w${i}`, head: 'ccc', branch: '', isSelf: i === self })) })
+  const texts = (n: number, self: number) => refChips('', 'ccc', many(n, self)).chips.map(c => c.text)
+  expect(texts(3, 1)).toEqual([' ⑂ w0 ', ' ⑂ w1 ', ' ⑂ w2 '])
+  expect(texts(5, 3)).toEqual([' ⑂ w3 ', ' ⑂ ×4 '])
+  expect(texts(5, -1)).toEqual([' ⑂ ×5 '])
+  expect(refChips('', 'ccc', many(5, -1)).chips.map(c => c.backgroundColor)).toEqual([C.purple])
   // a slash does not make a branch remote: the local heads decide
   expect(refChips('docs/x, upstream/y', '', known).chips.map(c => c.text)).toEqual([' ⎇ docs/x ', ' ⌂ upstream/y '])
   // one worktree alone is just the repo: no chip
   expect(refChips('', 'aaa', { heads: [], tracks: {}, trees: list.slice(0, 1) }).chips).toEqual([])
+})
+
+test('pointers list what is on one commit: branches with their origin state, remotes, tags, worktrees', () => {
+  const tree = (name: string, isSelf: boolean) => ({ name, path: `/r/${name}`, head: 'aaa', branch: '', isSelf })
+  const known = { heads: ['main', 'feat', 'lone'], tracks: { feat: '↑1 ↓2' }, trees: [tree('main', false), tree('wt', true)] }
+  expect(pointers('HEAD -> main, origin/main, origin/HEAD, feat, lone, origin/x, tag: v1', 'aaa', known)).toEqual({
+    locals: [{ name: 'main', sync: '= origin' }, { name: 'feat', sync: '↑1 ↓2' }, { name: 'lone', sync: 'no upstream' }],
+    remotes: ['origin/x'],
+    tags: ['v1'],
+    trees: known.trees,
+  })
+  expect(pointers('', 'zzz', known).trees).toEqual([])
 })
 
 test('layout draws one row per commit, bending forks and merges inside the row; HEAD is the one dot', () => {
@@ -172,6 +197,46 @@ test('scrolled down, the top lines and HEAD stay pinned over a ┊ gap', async (
   await down.unmount()
 })
 
+test('the card lists what points at the commit; the ⑂ 워크트리 button opens a list with each worktree and its change count', async ($, on) => {
+  const out = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+  on('process.run', async (_, e) => {
+    if (e.argv[1] === '-C') return e.argv[2] === '/repo' ? out(' M a\n?? b\n') : out('', 128)
+    if (e.argv[1] === 'worktree') return out('worktree /repo\nHEAD aaaaaaa1\nbranch refs/heads/main\n\nworktree /repo/.wt/x\nHEAD bbbbbbb2\ndetached\n')
+    if (e.argv[1] === 'rev-parse') return out('/repo\n')
+    if (e.argv[1] === 'for-each-ref') return out('main\t\n')
+    if (e.argv[1] === 'log') return out(LOG)
+    if (e.argv[1] === 'show') return out('Merge it\n\nwhy\n\x1e\n4\t2\tsrc/app/main.ts\n')
+    return out('')
+  })
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: PROPS, requestId: 'git-graph' })
+    const shown = async () => (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    // the card: branch with origin state, tag, and the worktree on it, marked as this session's
+    await ui.press({ key: 'c:aaaaaaa' })
+    expect(await shown()).toEqual(expect.arrayContaining(['⎇ main', '  = origin', '# v1', '⑂ repo', '  /repo', '  이 세션']))
+    await ui.press({ key: 'c:aaaaaaa' })
+    // the list
+    expect((await ui.find({ key: 'trees' }))?.text).toBe('⑂ 워크트리 2개')
+    expect(await ui.find({ key: 'tree:/repo' })).toBeUndefined()
+    await ui.press({ key: 'trees' })
+    expect(await ui.find({ key: 'tree:/repo' })).toBeDefined()
+    expect(await shown()).toEqual(expect.arrayContaining(['  /repo/.wt/x', '  bbbbbbb (detached)', '  변경 2개', '  변경 ?', '  ⎇ main']))
+    await ui.press({ key: 'trees' })
+    expect(await ui.find({ key: 'tree:/repo' })).toBeUndefined()
+    await ui.unmount()
+  }
+  // scrolled: the pinned copy has the button, and the list stays in the main pane only
+  const down = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: { ...PROPS, scroll: { offset: 5, bodyRows: 3 } }, requestId: 'git-graph' })
+  await down.press({ key: 'pin:trees' })
+  expect((await down.findAll({ key: 'tree:/repo' })).length).toBe(1)
+  await down.press({ key: 'trees' })
+  await down.unmount()
+})
+
 test('outside a repo the pane says so', async ($, on) => {
   on('process.run', async () => ({ value: { exitCode: 128, stdout: '', stderr: 'fatal', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('command.register', async () => ({ value: { command: 'git-graph' } }))
@@ -180,6 +245,22 @@ test('outside a repo the pane says so', async ($, on) => {
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
   expect(await ui.find({ text: 'git 저장소가 아니에요' })).toBeDefined()
+})
+
+test('a pane the desktop draws with no scroll window still draws (it scrolls itself)', async ($, on) => {
+  on('process.run', async (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'log' ? LOG : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  const { scroll: _, ...bare } = PROPS
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: bare as unknown as typeof PROPS, requestId: 'git-graph' })
+    expect(await ui.find({ type: 'Text', text: 'root commit' })).toBeDefined()
+    await ui.unmount()
+  }
 })
 
 test('parseShow splits the message from the numstat rows', () => {
@@ -243,12 +324,23 @@ test('addMine keeps the newest first, drops repeats and stays capped', () => {
   expect(addMine([], Array.from({ length: MINE_CAP + 5 }, (_, i) => `h${i}`).join('\n'))).toHaveLength(MINE_CAP)
 })
 
-test('a Bash call that moves HEAD marks the new commits with ✦; one that does not marks nothing', async ($, on) => {
+const WT = (...heads: string[]) => heads.map((h, i) => `worktree /r/w${i}\nHEAD ${h}\nbranch refs/heads/b${i}\n`).join('\n')
+
+test('moved lists the worktrees whose HEAD changed, by path; added, removed and unborn are handled', () => {
+  const t = (path: string, head: string) => ({ name: path, path, head, branch: '', isSelf: false })
+  expect(moved([t('/a', '1'), t('/b', '2')], [t('/a', '1'), t('/b', '3')])).toEqual([{ before: '2', after: '3' }])
+  expect(moved([t('/a', '1'), t('/b', '2')], [t('/a', '4'), t('/b', '5')])).toEqual([{ before: '1', after: '4' }, { before: '2', after: '5' }])
+  expect(moved([t('/a', '1')], [t('/a', '1'), t('/new', '9')])).toEqual([])
+  expect(moved([t('/a', '1'), t('/gone', '2')], [t('/a', '1')])).toEqual([])
+  expect(moved([t('/a', '0000000')], [t('/a', '7')])).toEqual([{ before: '', after: '7' }])
+})
+
+test('a Bash call that moves any worktree HEAD marks the new commits with ✦; one that does not marks nothing', async ($, on) => {
   const calls: string[][] = []
-  let heads = ['old', 'aaaaaaa1']
+  let snaps: string[] = []
   on('process.run', async (_, e) => {
     calls.push([...e.argv])
-    const out = e.argv[2] === 'HEAD' ? (heads.shift() ?? 'aaaaaaa1') : e.argv[1] === 'rev-list' ? 'bbbbbbb2\n' : e.argv[1] === 'log' ? LOG : ''
+    const out = e.argv[1] === 'worktree' ? (snaps.shift() ?? '') : e.argv[1] === 'rev-list' ? (e.argv[4]?.startsWith('a01d') ? 'bbbbbbb2\n' : 'ccccccc3\n') : e.argv[1] === 'log' ? LOG : ''
     return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('tool.call', async () => ({ result: {} }))
@@ -262,12 +354,17 @@ test('a Bash call that moves HEAD marks the new commits with ✦; one that does 
     await ui.unmount()
     return n
   }
+  snaps = [WT('a01d', '5b01'), WT('aaaaaaa1', '5b02')]
   expect(await marks()).toBe(0)
   await $.tool.call({ tool: 'Bash', command: 'git commit -m x' })
-  expect(calls.find(a => a[1] === 'rev-list')).toEqual(['git', 'rev-list', '-n', '50', 'old..aaaaaaa1'])
-  expect(await marks()).toBe(1)
-  // HEAD unchanged: no rev-list
-  heads = ['aaaaaaa1', 'aaaaaaa1']
+  expect(calls.filter(a => a[1] === 'rev-list')).toEqual([
+    ['git', 'rev-list', '-n', '50', 'a01d..aaaaaaa1'],
+    ['git', 'rev-list', '-n', '50', '5b01..5b02'],
+  ])
+  // bbbbbbb2 (first worktree) and ccccccc3 (second) both carry the mark
+  expect(await marks()).toBe(2)
+  // no HEAD moved: no rev-list
+  snaps = [WT('aaaaaaa1', '5b02'), WT('aaaaaaa1', '5b02')]
   calls.length = 0
   await $.tool.call({ tool: 'Bash', command: 'ls' })
   expect(calls.some(a => a[1] === 'rev-list')).toBe(false)
@@ -300,18 +397,20 @@ test('the uncommitted line opens a card of changed files; a file inserts @path, 
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('session.start', async (_, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
-  expect(await ui.find({ key: 'ask:commit-message' })).toBeUndefined()
-  await ui.press({ key: 'dirty' })
-  expect((await ui.find({ key: 'd:0' }))?.text).toBe('a.ts')
-  expect((await ui.find({ key: 'd:1' }))?.text).toBe('b.txt')
-  expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('  new')
-  await ui.press({ key: 'd:0' })
-  await ui.press({ key: 'ask:commit-message' })
-  expect(fills).toEqual([{ text: '@src/a.ts ', mode: 'insert' }, { text: '지금 변경을 커밋 메시지로 정리해줘', mode: 'replace' }])
-  await ui.press({ key: 'dirty' })
-  expect(await ui.find({ key: 'd:0' })).toBeUndefined()
-  await ui.unmount()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: PROPS, requestId: 'git-graph' })
+    expect(await ui.find({ key: 'ask:commit-message' })).toBeUndefined()
+    await ui.press({ key: 'dirty' })
+    expect((await ui.find({ key: 'd:0' }))?.text).toBe('a.ts')
+    expect((await ui.find({ key: 'd:1' }))?.text).toBe('b.txt')
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('  new')
+    await ui.press({ key: 'd:0' })
+    await ui.press({ key: 'ask:commit-message' })
+    expect(fills.splice(0)).toEqual([{ text: '@src/a.ts ', mode: 'insert' }, { text: '지금 변경을 커밋 메시지로 정리해줘', mode: 'replace' }])
+    await ui.press({ key: 'dirty' })
+    expect(await ui.find({ key: 'd:0' })).toBeUndefined()
+    await ui.unmount()
+  }
 })
 
 // HEAD sits on h1; x1 is a side tip off the same parent p
@@ -340,21 +439,23 @@ test('the 경로 강조 toggle grays rows off the HEAD path, in the top bar and 
   on('session.start', async (_, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   const color = async (ui: { findAll: (q: { type: string; text: string }) => Promise<{ text: string; props: Record<string, unknown> }[]> }, subject: string) => (await ui.findAll({ type: 'Text', text: subject })).find(t => t.text === subject)?.props.color
-  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
-  expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조')
-  expect(await color(ui, 'off the path')).toBe('#abb2bf')
-  await ui.press({ key: 'trace' })
-  expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조 끄기')
-  expect(await color(ui, 'off the path')).toBe('#5c6370')
-  expect(await color(ui, 'on the path')).not.toBe('#5c6370')
-  expect(await color(ui, 'root')).not.toBe('#5c6370')
-  await ui.press({ key: 'trace' })
-  expect(await color(ui, 'off the path')).toBe('#abb2bf')
-  await ui.unmount()
-  const down = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: { ...PROPS, scroll: { offset: 5, bodyRows: 3 } }, requestId: 'git-graph' })
-  expect(await down.find({ key: 'pin:trace' })).toBeDefined()
-  expect(await down.find({ key: 'pin:remote' })).toBeDefined()
-  await down.unmount()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: PROPS, requestId: 'git-graph' })
+    expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조')
+    expect(await color(ui, 'off the path')).toBe('#abb2bf')
+    await ui.press({ key: 'trace' })
+    expect((await ui.find({ key: 'trace' }))?.text).toBe('경로 강조 끄기')
+    expect(await color(ui, 'off the path')).toBe('#5c6370')
+    expect(await color(ui, 'on the path')).not.toBe('#5c6370')
+    expect(await color(ui, 'root')).not.toBe('#5c6370')
+    await ui.press({ key: 'trace' })
+    expect(await color(ui, 'off the path')).toBe('#abb2bf')
+    await ui.unmount()
+    const down = await $.ui.mount({ plugin: 'git-graph', surface, component: 'Pane', props: { ...PROPS, scroll: { offset: 5, bodyRows: 3 } }, requestId: 'git-graph' })
+    expect(await down.find({ key: 'pin:trace' })).toBeDefined()
+    expect(await down.find({ key: 'pin:remote' })).toBeDefined()
+    await down.unmount()
+  }
 })
 
 test('grown names the branches that fell further behind, by how much', () => {
@@ -409,5 +510,68 @@ test('원격 확인 fetches without prompts, toasts new commits once, one toast 
   await ui.press({ key: 'remote' })
   await clock.advance(180_000)
   expect(fetches).toHaveLength(4)
+  await ui.unmount()
+})
+
+test('the HEAD pulse: frames breathe between blue and a dim blue, encode as one ● cell, and the dot splits out of a graph row', () => {
+  const fgs = breath(15)
+  expect(fgs).toHaveLength(15)
+  expect(fgs[0]).toBe(Math.min(...fgs))
+  expect(Math.max(...fgs)).toBeLessThanOrEqual(0x61afef)
+  expect(new Set(fgs).size).toBe(8)
+  // the dimmest step sits closer to the band than the blue is
+  expect((fgs[0] ?? 0) & 255).toBeLessThan(0xef)
+  // 0x25cf, 0x61afef, 0x3e4451 as little-endian u32, base64
+  expect(dotCells(0x61afef)).toBe('zyUAAO+vYQBRRD4A')
+  const red = { text: '●─', color: '#f00' }
+  expect(splitDot([{ text: '│ ' }, { text: '┿●─╮', color: '#0f0' }, { text: ' ' }])).toEqual({
+    before: [{ text: '│ ' }, { text: '┿', color: '#0f0' }],
+    after: [{ text: '─╮', color: '#0f0' }, { text: ' ' }],
+  })
+  expect(splitDot([red])).toEqual({ before: [], after: [{ text: '─', color: '#f00' }] })
+  expect(splitDot([{ text: '┿ ' }])).toBeNull()
+})
+
+test('HEAD pulses as a Raster on the terminal and stays a plain ● elsewhere; a timer blits frames until blit is denied', async ($, on) => {
+  const clock = mock.clock(on)
+  const blits: { requestId: string; key: string; cells?: string }[] = []
+  let isMounted = true
+  on('ui.blit', async (_, e) => {
+    blits.push({ requestId: e.requestId, key: e.key, cells: 'cells' in e ? e.cells : undefined })
+    return { value: isMounted ? {} : { deny: 'not mounted' } }
+  })
+  on('process.run', async (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'log' ? LOG : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  // desktop: no Raster, the ● stays in the graph text
+  const flat = await $.ui.mount({ plugin: 'git-graph', surface: 'desktop', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  expect(await flat.find({ type: 'Raster' })).toBeUndefined()
+  expect(await flat.find({ type: 'Text', text: '●' })).toBeDefined()
+  await flat.unmount()
+  await clock.advance(1000)
+  expect(blits).toHaveLength(0)
+  // terminal: one 1x1 Raster, keyed, and no ● left in the text
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  const dot = await ui.find({ type: 'Raster', key: 'pulse' })
+  expect(dot?.props).toMatchObject({ columns: 1, rows: 1 })
+  expect(await ui.find({ type: 'Text', text: '●' })).toBeUndefined()
+  // a second drawing starts no second timer
+  await ui.press({ key: 'trace' })
+  await ui.press({ key: 'trace' })
+  await clock.advance(80 * 15)
+  expect(blits).toHaveLength(15)
+  expect(blits.every(b => b.requestId === 'git-graph' && b.key === 'pulse')).toBe(true)
+  expect(new Set(blits.map(b => b.cells)).size).toBe(8)
+  // denied: it gives up after a few misses and blits no more
+  isMounted = false
+  await clock.advance(80 * 10)
+  const stopped = blits.length
+  expect(stopped).toBe(15 + 5)
+  await clock.advance(80 * 10)
+  expect(blits).toHaveLength(stopped)
   await ui.unmount()
 })

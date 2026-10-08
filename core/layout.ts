@@ -7,9 +7,9 @@ import type { Seg } from './theme.ts'
 export const AUTHOR_CELLS = 5
 
 // a row that only bends lanes: no commit on it
-const LINK_ROW = { hash: '', short: '', refs: [], isHead: false, author: '', age: '', subject: '' }
+const LINK_ROW = { hash: '', short: '', decor: '', refs: [], isHead: false, author: '', age: '', subject: '' }
 
-export type Row = { graph: Seg[]; hash: string; short: string; refs: Seg[]; isHead: boolean; author: string; age: string; subject: string }
+export type Row = { graph: Seg[]; hash: string; short: string; decor: string; refs: Seg[]; isHead: boolean; author: string; age: string; subject: string }
 
 type Lane = { hash: string; color: string } | null
 // a cell is the set of sides its line reaches; the box glyph follows from the set
@@ -133,7 +133,7 @@ export function layout(log: string[], now: number, known: GraphRefs = NO_REFS, m
     built.push({
       cells,
       at,
-      row: { hash, short, refs: chips, isHead, author: name.slice(0, AUTHOR_CELLS), age: age(Number(ct), now), subject: rest.join(SEP) },
+      row: { hash, short, decor, refs: chips, isHead, author: name.slice(0, AUTHOR_CELLS), age: age(Number(ct), now), subject: rest.join(SEP) },
     })
   }
 
