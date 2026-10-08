@@ -9,7 +9,6 @@ export const TREES = ['git', 'worktree', 'list', '--porcelain']
 export const TOP = ['git', 'rev-parse', '--show-toplevel']
 // -m --first-parent: a merge lists what it brought onto its first parent
 export const show = (hash: string) => ['git', 'show', '-m', '--first-parent', '--numstat', '--format=%B\x1e', hash]
-export const HEAD = ['git', 'rev-parse', 'HEAD']
 // the commits a Bash call added: before..after; no `before` (unborn branch) lists what leads to `after`
 export const added = (before: string, after: string) => ['git', 'rev-list', '-n', '50', before ? `${before}..${after}` : after]
 export const DIFF = ['git', 'diff', '--numstat', 'HEAD']

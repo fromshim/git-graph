@@ -40,7 +40,7 @@ export function trees(out: string, top: string): GraphTree[] {
     const path = /^worktree (.+)$/m.exec(block)?.[1]
     const head = /^HEAD ([0-9a-f]+)$/m.exec(block)?.[1]
     if (!path || !head) return []
-    return [{ name: path.slice(path.lastIndexOf('/') + 1), head, isSelf: path === top }]
+    return [{ name: path.slice(path.lastIndexOf('/') + 1), path, head, isSelf: path === top }]
   })
 }
 

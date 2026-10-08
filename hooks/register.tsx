@@ -1,12 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
 
-import { DIFF, FETCH, FETCH_ENV, GIT, HEAD, STATUS, TOP, TRACKS, TREES, added, show } from '../core/commands.ts'
+import { DIFF, FETCH, FETCH_ENV, GIT, STATUS, TOP, TRACKS, TREES, added, show } from '../core/commands.ts'
 import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
 import { ancestors, dim } from '../core/ancestry.ts'
 import { NEW, parseChanges } from '../core/changes.ts'
-import { addMine } from '../core/mine.ts'
+import { addMine, moved } from '../core/mine.ts'
 import { grown } from '../core/remote.ts'
 import { track, trees } from '../core/refs.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
@@ -114,9 +114,10 @@ async function toggleWatch($: EngineInterface) {
   void check($)
 }
 
-async function head($: EngineInterface) {
-  const r = await $.process.run(HEAD).catch(() => undefined)
-  return r?.exitCode === 0 ? r.stdout.trim() : ''
+// every worktree's HEAD, so a commit made in any of them (a subagent's) shows
+async function heads($: EngineInterface) {
+  const r = await $.process.run(TREES).catch(() => undefined)
+  return trees(r?.exitCode === 0 ? r.stdout : '', '')
 }
 
 async function toggle($: EngineInterface, hash: string, short: string) {
@@ -147,14 +148,16 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    // a Bash call that moved HEAD made commits: remember them for the marker
-    const before = await head($)
+    // a Bash call that moved a worktree's HEAD made commits: remember them for the marker
+    const before = await heads($)
     const ran = await next(e)
-    const after = await head($)
-    if (after && after !== before) {
-      const r = await $.process.run(added(before, after)).catch(() => undefined)
-      if (r?.exitCode === 0) await update($, mine, prev => addMine(prev, r.stdout)).catch(() => {})
-    }
+    const outs = await Promise.all(
+      moved(before, await heads($)).map(async m => {
+        const r = await $.process.run(added(m.before, m.after)).catch(() => undefined)
+        return r?.exitCode === 0 ? r.stdout : ''
+      }),
+    )
+    if (outs.some(Boolean)) await update($, mine, prev => outs.reduce(addMine, prev)).catch(() => {})
     void refresh($).catch(() => {})
     return ran
   })

@@ -6,7 +6,7 @@ import { age, refChips, track, trees } from '../core/refs.ts'
 import { ancestors, dim } from '../core/ancestry.ts'
 import { parseChanges } from '../core/changes.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
-import { MINE_CAP, addMine } from '../core/mine.ts'
+import { MINE_CAP, addMine, moved } from '../core/mine.ts'
 import { parseShow } from '../core/show.ts'
 
 const S = '\x1f'
@@ -36,7 +36,7 @@ test('refs become chips: local+origin merged, remote and tag apart, origin/HEAD 
 test('upstream tracking and worktrees become chips', () => {
   expect([track('[ahead 2, behind 1]'), track('[behind 3]'), track('[gone]'), track('')]).toEqual(['↑2 ↓1', '↓3', '', ''])
   const list = trees('worktree /r/main\nHEAD aaa\nbranch refs/heads/main\n\nworktree /r/wt-a\nHEAD bbb\ndetached\n', '/r/wt-a')
-  expect(list).toEqual([{ name: 'main', head: 'aaa', isSelf: false }, { name: 'wt-a', head: 'bbb', isSelf: true }])
+  expect(list).toEqual([{ name: 'main', path: '/r/main', head: 'aaa', isSelf: false }, { name: 'wt-a', path: '/r/wt-a', head: 'bbb', isSelf: true }])
   const known = { heads: ['feat', 'docs/x'], tracks: { feat: '↑2' }, trees: list }
   expect(refChips('feat', 'bbb', known).chips.map(c => c.text)).toEqual([' ⑂ wt-a ', ' ⎇ feat ↑2 '])
   // a slash does not make a branch remote: the local heads decide
@@ -259,12 +259,23 @@ test('addMine keeps the newest first, drops repeats and stays capped', () => {
   expect(addMine([], Array.from({ length: MINE_CAP + 5 }, (_, i) => `h${i}`).join('\n'))).toHaveLength(MINE_CAP)
 })
 
-test('a Bash call that moves HEAD marks the new commits with ✦; one that does not marks nothing', async ($, on) => {
+const WT = (...heads: string[]) => heads.map((h, i) => `worktree /r/w${i}\nHEAD ${h}\nbranch refs/heads/b${i}\n`).join('\n')
+
+test('moved lists the worktrees whose HEAD changed, by path; added, removed and unborn are handled', () => {
+  const t = (path: string, head: string) => ({ name: path, path, head, isSelf: false })
+  expect(moved([t('/a', '1'), t('/b', '2')], [t('/a', '1'), t('/b', '3')])).toEqual([{ before: '2', after: '3' }])
+  expect(moved([t('/a', '1'), t('/b', '2')], [t('/a', '4'), t('/b', '5')])).toEqual([{ before: '1', after: '4' }, { before: '2', after: '5' }])
+  expect(moved([t('/a', '1')], [t('/a', '1'), t('/new', '9')])).toEqual([])
+  expect(moved([t('/a', '1'), t('/gone', '2')], [t('/a', '1')])).toEqual([])
+  expect(moved([t('/a', '0000000')], [t('/a', '7')])).toEqual([{ before: '', after: '7' }])
+})
+
+test('a Bash call that moves any worktree HEAD marks the new commits with ✦; one that does not marks nothing', async ($, on) => {
   const calls: string[][] = []
-  let heads = ['old', 'aaaaaaa1']
+  let snaps: string[] = []
   on('process.run', async (_, e) => {
     calls.push([...e.argv])
-    const out = e.argv[2] === 'HEAD' ? (heads.shift() ?? 'aaaaaaa1') : e.argv[1] === 'rev-list' ? 'bbbbbbb2\n' : e.argv[1] === 'log' ? LOG : ''
+    const out = e.argv[1] === 'worktree' ? (snaps.shift() ?? '') : e.argv[1] === 'rev-list' ? (e.argv[4]?.startsWith('a01d') ? 'bbbbbbb2\n' : 'ccccccc3\n') : e.argv[1] === 'log' ? LOG : ''
     return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('tool.call', async () => ({ result: {} }))
@@ -278,12 +289,17 @@ test('a Bash call that moves HEAD marks the new commits with ✦; one that does 
     await ui.unmount()
     return n
   }
+  snaps = [WT('a01d', '5b01'), WT('aaaaaaa1', '5b02')]
   expect(await marks()).toBe(0)
   await $.tool.call({ tool: 'Bash', command: 'git commit -m x' })
-  expect(calls.find(a => a[1] === 'rev-list')).toEqual(['git', 'rev-list', '-n', '50', 'old..aaaaaaa1'])
-  expect(await marks()).toBe(1)
-  // HEAD unchanged: no rev-list
-  heads = ['aaaaaaa1', 'aaaaaaa1']
+  expect(calls.filter(a => a[1] === 'rev-list')).toEqual([
+    ['git', 'rev-list', '-n', '50', 'a01d..aaaaaaa1'],
+    ['git', 'rev-list', '-n', '50', '5b01..5b02'],
+  ])
+  // bbbbbbb2 (first worktree) and ccccccc3 (second) both carry the mark
+  expect(await marks()).toBe(2)
+  // no HEAD moved: no rev-list
+  snaps = [WT('aaaaaaa1', '5b02'), WT('aaaaaaa1', '5b02')]
   calls.length = 0
   await $.tool.call({ tool: 'Bash', command: 'ls' })
   expect(calls.some(a => a[1] === 'rev-list')).toBe(false)
