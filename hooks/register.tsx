@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, RenderInput, Timer } from 'claude-code'
 
 import { DIFF, FETCH, FETCH_ENV, GIT, STATUS, TOP, TRACKS, TREES, added, show, statusIn } from '../core/commands.ts'
+import { TRIES, fitRows } from '../core/budget.ts'
 import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
 import { ancestors, dim } from '../core/ancestry.ts'
@@ -35,7 +36,7 @@ const mine = atom({ plugin: 'git-graph', key: 'mine' } as const, [])
 
 const FOLDED_LANES = 3
 const WIDE = 72
-// ponytail: a pane tree is capped at 20000 nodes; 150 commits and 30 files keep well under it
+// ponytail: the terminal draws a tree of any size; the desktop is held to core/budget.ts, which cuts rows
 const MAX_FILES = 30
 
 async function refresh($: EngineInterface) {
@@ -214,7 +215,8 @@ async function say($: EngineInterface, text: string, mode: 'replace' | 'insert' 
 }
 
 // the pane's drawing; a throw here is caught by the hook below
-async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
+// `cap` rows at most; the tree comes with the row count of the whole graph
+async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity) {
   const els = $.ui.resolve(e)
   const { Box, Text, Button } = els
   // the pulsing dot is the terminal's alone (Raster); elsewhere HEAD keeps the plain ●
@@ -225,15 +227,20 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
   const msg = await read($, note)
 
   if (msg)
-    return (
-      <Box height={scroll.bodyRows} justifyContent="center" alignItems="center">
-        <Text color={C.white}>{msg}</Text>
-      </Box>
-    )
+    return {
+      total: 0,
+      tree: (
+        <Box height={scroll.bodyRows} justifyContent="center" alignItems="center">
+          <Text color={C.white}>{msg}</Text>
+        </Box>
+      ),
+    }
 
   const isWide = await read($, wide)
   const known = await read($, refs)
-  const { rows, lanes } = layout(await read($, lines), Date.now(), known, isWide ? Infinity : FOLDED_LANES)
+  const { rows: all, lanes } = layout(await read($, lines), Date.now(), known, isWide ? Infinity : FOLDED_LANES)
+  const rows = all.slice(0, cap)
+  const hidden = all.slice(cap).filter(r => r.hash).length
   const changed = await read($, dirty)
   const openHash = await read($, open)
   const shown = await read($, detail)
@@ -451,7 +458,7 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
               <Text color={C.yellow}>✦ </Text>
             </Box>
           )}
-          <Text wrap="truncate-end" color={isOff ? C.gray : row.isHead ? C.white : C.fg} bold={row.isHead}>{row.subject}</Text>
+          <Text wrap="truncate-end" color={isOff ? C.gray : row.isHead ? C.white : C.fg} bold={row.isHead || undefined}>{row.subject}</Text>
         </Box>
         <Box flexShrink={0} marginLeft={1}>
           <Text backgroundColor={personColor(row.author)} color={C.bg}>{` ${row.author.padEnd(AUTHOR_CELLS)} `}</Text>
@@ -482,7 +489,7 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
   const under = rows[Math.min(rows.length - 1, Math.max(0, offset - above))]
   const gapColor = under?.graph[0]?.text.startsWith(' ') ? C.gray : under?.graph[0]?.color ?? C.gray
 
-  return (
+  const tree = (
     <Box flexDirection="column">
       {top('')}
       {rows.map(row =>
@@ -496,6 +503,7 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
           </Box>
         ),
       )}
+      {hidden > 0 && <Text color={C.gray}>{`… 커밋 ${hidden}개 더 (데스크톱은 그림 크기 제한으로 일부만 보여줘요)`}</Text>}
       {offset > 0 && (
         <Box position="absolute" top={offset} left={0} right={0} flexDirection="column" backgroundColor={C.bg}>
           {top('pin:')}
@@ -505,6 +513,21 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>) {
       )}
     </Box>
   )
+  return { tree, total: all.length }
+}
+
+// the terminal draws any size; a remote surface refuses a tree past BUDGET characters, so it gets fewer rows
+async function draw($: EngineInterface, e: RenderInput<'Pane'>) {
+  let { tree, total } = await paint($, e)
+  let n = total
+  if (e.surface === 'terminal') return tree
+  for (let i = 0; i < TRIES; i++) {
+    const next = fitRows(n, JSON.stringify(tree).length)
+    if (next >= n) break
+    n = next
+    tree = (await paint($, e, n)).tree
+  }
+  return tree
 }
 
 export const register: Register = on => {
@@ -557,7 +580,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     rendered = true
     try {
-      return await paint($, e)
+      return await draw($, e)
     } catch (err) {
       // the desktop's log is out of sight: say what broke in the pane, and once per message in a toast
       const what = `${err instanceof Error ? err.name : 'Error'}: ${err instanceof Error ? err.message : String(err)}`

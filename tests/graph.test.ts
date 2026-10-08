@@ -1,5 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { BUDGET, MIN_ROWS, fitRows } from '../core/budget.ts'
 import { layout } from '../core/layout.ts'
 import { grown } from '../core/remote.ts'
 import { age, pointers, refChips, track, trees } from '../core/refs.ts'
@@ -688,4 +689,51 @@ test('no drawing request within 5s toasts once; a drawing, or a pane left undraw
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await clock.advance(20_000)
   expect(toasts).toHaveLength(1)
+})
+
+// 150 made-up commits: every 7th is a merge of two short branches, some carry branch and tag names
+const BIG = Array.from({ length: 150 }, (_, i) => {
+  const h = (n: number) => String(n).padEnd(8, 'a')
+  const parents = i === 149 ? '' : i % 7 === 0 && i + 3 < 150 ? `${h(i + 1)} ${h(i + 2)}` : i % 7 === 1 && i + 3 < 150 ? h(i + 2) : h(i + 1)
+  const refs = i === 0 ? 'HEAD -> main, origin/main, tag: v9' : i % 11 === 3 ? `feat/topic-${i}, origin/feat/topic-${i}` : i % 13 === 5 ? `tag: v1.${i}` : ''
+  return log(h(i), parents, refs, i % 3 ? 'seungboshim-iconx' : 'TJ_iconX', `${i % 2 ? 'fix' : 'feat'}(scope${i % 9}): ${'adjust the thing that was acting up in the module '.repeat(2).slice(0, 50 + (i % 20))}`)
+}).join('\n')
+const BUDGET_PROPS = { ...PROPS, scroll: { offset: 0, bodyRows: 40 } }
+
+test('a remote surface gets a tree under the size bound, the terminal keeps every row', async ($, on) => {
+  on('process.run', async (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'log' ? BIG : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const draw = (surface: 'terminal' | 'desktop') => $.ui.render({ surface, component: 'Pane', props: BUDGET_PROPS, requestId: 'git-graph' })
+  const count = (n: unknown): number => (typeof n === 'object' && n ? 1 + Object.values(n).reduce((s: number, v) => s + count(v), 0) : 0)
+  // terminal: no bound, all 150 commits
+  const terminal = await draw('terminal')
+  expect(JSON.stringify(terminal).match(/"key":"c:/g)).toHaveLength(150)
+  expect(JSON.stringify(terminal)).not.toContain('커밋 ')
+  // desktop: fewer rows, a gray line says how many are left, size and node count under the bounds
+  const desktop = await draw('desktop')
+  const json = JSON.stringify(desktop)
+  const shown = json.match(/"key":"c:/g)?.length ?? 0
+  expect(json.length).toBeLessThan(BUDGET)
+  expect(count(desktop)).toBeLessThan(20_000)
+  expect(shown).toBeGreaterThan(20)
+  expect(shown).toBeLessThan(150)
+  expect(json).toContain(`… 커밋 ${150 - shown}개 더`)
+  // the open commit card still works on the desktop
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'desktop', component: 'Pane', props: BUDGET_PROPS, requestId: 'git-graph' })
+  await ui.press({ key: 'c:0aaaaaa' })
+  expect(await ui.find({ key: 'ask:explain' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('fitRows keeps a fitting count, else scales by budget/size with margin, never below the floor', () => {
+  expect(fitRows(150, 80_000)).toBe(150)
+  expect(fitRows(150, 90_000)).toBe(150)
+  expect(fitRows(150, 180_000)).toBe(67)
+  expect(fitRows(150, 10_000_000)).toBe(MIN_ROWS)
+  expect(fitRows(10, 200_000)).toBe(9)
 })
