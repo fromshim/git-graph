@@ -10,6 +10,22 @@ A Claude Code mod that draws your repository's git graph, live, in a side pane n
 
 `/plugin install git-graph@fromshim`
 
+## Working with Claude
+
+The graph sits right next to the conversation, so you can hand commits to Claude with a click and see what Claude and its subagents committed at a glance.
+
+<p align="center">
+  <img src="assets/claude.svg" alt="A Claude Code session: the conversation and prompt box on the left, the git-graph pane with an open commit card on the right" width="880">
+</p>
+
+- The card's `설명` (explain), `리뷰` (review) and `HEAD 와 비교` (compare with HEAD) buttons fill the prompt box with a sentence such as `커밋 a1b2c3d 을 리뷰해줘`. Nothing is sent; edit it, then send.
+- Click a file line in the card to insert `@path` at the prompt cursor.
+- Commits Claude made in this session get a `✦` before the subject, including ones a subagent made in another worktree.
+- Click the `커밋 안 한 변경 N개` (uncommitted changes) line to list the changed files; its `커밋 메시지 정리` (draft a commit message) button fills the prompt box with `지금 변경을 커밋 메시지로 정리해줘`.
+- Press a chip (branch, remote, tag, worktree) and a list opens under that row: local branches (with their origin state), remote branches, tags and worktrees (path, uncommitted change count). This session's worktree is marked `이 세션` and drawn in yellow, and this session's HEAD dot glows yellow.
+- Turn on `원격 확인` (check remote) to run `git fetch` every 60 seconds and get a toast when origin gets new commits.
+- Turn on `경로 강조` (highlight path) to gray out rows that are not ancestors of HEAD.
+
 ## Features
 
 - One row per commit. Lanes are computed from parent hashes, and each lane keeps its color for its whole life.
@@ -18,14 +34,6 @@ A Claude Code mod that draws your repository's git graph, live, in a side pane n
 - Past 3 lanes the graph folds, and a button unfolds it.
 - While you scroll, the top lines (fold, highlight-path and check-remote buttons, uncommitted count, HEAD) stay pinned above a `┊` gap.
 - Click a commit hash to open its message and changed files (up to 30).
-- In an open card, the `설명` (explain), `리뷰` (review) and `HEAD 와 비교` (compare with HEAD) buttons fill the prompt box. Nothing is sent; edit it, then send.
-- Chips (branch, remote, tag, worktree) are buttons. Press one and a list opens under that row: local branches (with their origin state), remote branches, tags and worktrees (path, uncommitted change count, marked as this session's). One list is open at a time; pressing a chip on another row moves it.
-- Click a file line in the card to insert `@path` at the prompt cursor.
-- Commits made through Bash in this session get a `✦` before the subject, including ones a subagent makes in another worktree.
-- Click the `커밋 안 한 변경 N개` (uncommitted changes) line to list the changed files (untracked ones show `new`); its `커밋 메시지 정리` (draft a commit message) button fills the prompt box.
-- The `경로 강조` (highlight path) button at the top grays out commits that are not ancestors of HEAD. Off by default.
-- The `원격 확인` (check remote) button at the top runs `git fetch` every 60 seconds and shows a toast when a branch falls further behind (`↓n`). Off by default.
-- This session's own worktree chip is yellow.
 - Each row ends with an author chip, the short hash and a relative age (`2h`, `3d`, ...).
 - Refreshes every 5 seconds and after each Bash tool call.
 - `/git-graph` opens and closes the pane.
@@ -50,6 +58,8 @@ Chips other than `HEAD` and the author chip are buttons on a dark tint of the ch
 | `⑂ ×N` | the rest, grouped, when four or more worktrees sit on one commit |
 
 ## Install
+
+Claude Code needs a build with hooks-module mods enabled (they sit behind a rollout switch); see Requirements and notes below.
 
 Through the catalog:
 
