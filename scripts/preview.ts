@@ -1,4 +1,4 @@
-// Regenerates assets/*.svg from the mod's own layout: run `npx -y tsx scripts/preview.ts` from the repo root.
+// Regenerates assets/*.svg from the mod's own layout: run `npx -y tsx scripts/preview.ts` from the repo root (`--flow <dir>` writes the flow.gif frames instead, see scripts/flow.sh).
 import { mkdirSync, writeFileSync } from 'node:fs'
 
 import { SEP } from '../core/commands.ts'
@@ -7,7 +7,7 @@ import type { Row } from '../core/layout.ts'
 import { review } from '../core/prompt.ts'
 import { splitDot } from '../core/pulse.ts'
 import { pointers, refChips, track } from '../core/refs.ts'
-import { C, chip, personColor, tint } from '../core/theme.ts'
+import { C, chip, mix, personColor, rgb, tint } from '../core/theme.ts'
 import type { Seg } from '../core/theme.ts'
 import type { GraphRefs } from '../types'
 
@@ -38,10 +38,10 @@ const HISTORY: [number, number[], string, string, number, string][] = [
   [15, [16], '', 'dev', 200000, 'chore: add the license'],
   [16, [], '', 'dev', 300000, 'chore: initial commit'],
 ]
-const LOG = HISTORY.map(([n, parents, decor, author, mins, subject]) =>
+let LOG = HISTORY.map(([n, parents, decor, author, mins, subject]) =>
   [H(n), parents.map(H).join(' '), H(n).slice(0, 7), decor, author, String(NOW / 1000 - mins * 60), subject].join(SEP),
 )
-const REFS: GraphRefs = {
+let REFS: GraphRefs = {
   heads: ['main', 'feat/search', 'fix/login', 'feat/export'],
   tracks: { 'feat/search': track('[ahead 2, behind 1]'), 'fix/login': track('[ahead 1]') },
   trees: [
@@ -49,20 +49,15 @@ const REFS: GraphRefs = {
     { name: 'hotfix', path: '/work/hotfix', head: H(2), branch: 'fix/login', isSelf: false },
   ],
 }
-const CHANGED = 3
-const TREE_CHANGES: Record<string, string> = { '/work/app': '3개', '/work/hotfix': '0개' }
+let CHANGED = 3
+let TREE_CHANGES: Record<string, string> = { '/work/app': '3개', '/work/hotfix': '0개' }
 type CardData = { body: string[]; files: string[][] }
 // what a pane shows: which commit's card is open, whose ref list is open, which commits are marked ✦ (made in this session)
 type View = { open: string; refOpen: string; mine: Set<string>; card: CardData; hot?: string }
-const VIEW: View = {
-  open: H(4),
-  refOpen: H(1),
-  mine: new Set([H(1), H(5)]),
-  card: {
-    body: ['Merge pull request #12 from feat/export', 'Adds the SVG exporter and a --width flag.'],
-    files: [['64', '0', 'core/export.ts'], ['12', '3', 'hooks/register.tsx'], ['9', '0', 'tests/export.test.ts'], ['2', '2', 'README.md']],
-  },
-}
+// HEAD's dot color; --flow breathes it frame by frame
+let GLOW = C.glow
+const hex = (n: number) => '#' + n.toString(16).padStart(6, '0')
+const glowAt = (color: string, bg: string, f: number) => hex(mix(mix(rgb(color), rgb(bg), 0.4), rgb(color), (1 - Math.cos((2 * Math.PI * f) / 24)) / 2))
 
 // ---- tiny SVG layer: every glyph sits at column * CHAR_W, so no font advance matters ----
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -176,9 +171,8 @@ function pane(v: View): { out: string[]; y: number } {
       out.push(m)
       return next
     }
-    // HEAD's dot is the bright yellow glow (a still frame of the pulse)
-    const dot = r.isHead ? splitDot(r.graph) : null
-    const graph = dot ? [...dot.before, { text: '●', color: C.glow }, ...dot.after] : r.graph
+        const dot = r.isHead ? splitDot(r.graph) : null
+    const graph = dot ? [...dot.before, { text: '●', color: GLOW }, ...dot.after] : r.graph
     let col = graph.reduce(put, 0)
     const right = W - 20
     const head = [...(r.isHead ? [chip('HEAD', C.blue)] : []), ...r.refs.map(button)]
@@ -209,11 +203,6 @@ function pane(v: View): { out: string[]; y: number } {
   }
   return { out, y }
 }
-const preview = () => {
-  const { out, y } = pane(VIEW)
-  return svg(W, y, out, 'Git graph')
-}
-
 // a round border in C.sel, marginLeft 2, paddingX 1: `lines` draw inside, one per row
 function frame(out: string[], y0: number, lines: ((x: number, y: number) => string)[]): number {
   const L = 2
@@ -371,9 +360,65 @@ function legend(lang: 'ko' | 'en'): string {
   return svg(cols, chips.length * 1.5, out)
 }
 
-mkdirSync('assets', { recursive: true })
-writeFileSync('assets/preview.svg', preview())
-writeFileSync('assets/claude.svg', session())
-writeFileSync('assets/legend.ko.svg', legend('ko'))
-writeFileSync('assets/legend.en.svg', legend('en'))
-console.log('wrote assets/preview.svg, assets/claude.svg, assets/legend.ko.svg, assets/legend.en.svg')
+// ---- flow.gif: three subagent worktrees commit, the parent cherry-picks them onto feat/search, cleans up, merges into main, pushes ----
+type Hist = [number, number[], string, string, number, string][]
+const base = (main: string): Hist => [
+  [4, [6, 9], main, 'ana', 200, 'Merge pull request #12 from feat/export'],
+  [9, [6], '', 'ana', 420, 'feat(export): write the graph as SVG'],
+  [6, [10], 'tag: v0.4.0', 'ana', 4300, 'chore(release): v0.4.0'],
+  [10, [11], '', 'ana', 14400, 'refactor: extract the theme palette'],
+  [11, [], '', 'ana', 31000, 'docs: describe the chip legend'],
+]
+const toLog = (h: Hist) => h.map(([n, parents, decor, author, mins, subject]) =>
+  [H(n), parents.map(H).join(' '), H(n).slice(0, 7), decor, author, String(NOW / 1000 - mins * 60), subject].join(SEP))
+const AG = ['agent-a3f9', 'agent-b71c', 'agent-c0e2']
+const BR = AG.map(a => 'worktree-' + a)
+const SUBJ = ['fix(search): ignore case in matches', 'test(search): cover empty queries', 'docs(search): document the flags']
+const tree = (name: string, head: number, branch: string, isSelf = false) =>
+  ({ name, path: isSelf ? '/work/app' : `/work/app/.claude/worktrees/${name}`, head: H(head), branch, isSelf })
+type Stage = { hist: Hist; heads: string[]; trees: ReturnType<typeof tree>[]; mine: number[]; hold: number }
+const FEAT: Hist[number] = [1, [4], 'HEAD -> feat/search', 'ana', 30, 'feat(search): add a fuzzy matcher']
+const app = (at: number) => tree('app', at, 'feat/search', true)
+// agent commits: a, b, c each on its own branch off commit 1
+const agentRows = (n: number): Hist => [...Array(n).keys()].reverse().map(i => [20 + i, [1], BR[i]!, 'ana', 9 - i * 2, SUBJ[i]!])
+const agentTrees = (n: number) => AG.map((a, i) => tree(a, i < n ? 20 + i : 1, BR[i]!))
+const featDecor = (n: number) => ['HEAD -> feat/search', ...BR.slice(n)].join(', ')
+// cherry-picked copies 30, 31, 32 stacked on 1
+const picked = (n: number, top: string): Hist => [...Array(n).keys()].reverse().map(i => [30 + i, [i ? 29 + i : 1], i === n - 1 ? top : '', 'ana', 3 - i, SUBJ[i]!])
+const MAIN = ['main', 'feat/search']
+const STAGES: Stage[] = [
+  { hist: [FEAT, ...base('main, origin/main')], heads: MAIN, trees: [app(1)], mine: [1], hold: 27 },
+  { hist: [[1, [4], featDecor(0), 'ana', 30, FEAT[5]], ...base('main, origin/main')], heads: [...MAIN, ...BR], trees: [app(1), ...agentTrees(0)], mine: [1], hold: 30 },
+  ...[1, 2, 3].map(n => ({ hist: [...agentRows(n), [1, [4], featDecor(n), 'ana', 30, FEAT[5]] as Hist[number], ...base('main, origin/main')], heads: [...MAIN, ...BR], trees: [app(1), ...agentTrees(n)], mine: [1, ...[20, 21, 22].slice(0, n)], hold: 21 })),
+  ...[1, 2, 3].map(n => ({ hist: [...picked(n, 'HEAD -> feat/search'), ...agentRows(3), [1, [4], '', 'ana', 30, FEAT[5]] as Hist[number], ...base('main, origin/main')], heads: [...MAIN, ...BR], trees: [app(30 + n - 1), ...agentTrees(3)], mine: [1, 20, 21, 22, 30, 31, 32].filter(h => h < 30 || h < 30 + n), hold: 18 })),
+  { hist: [...picked(3, 'HEAD -> feat/search'), [1, [4], '', 'ana', 30, FEAT[5]], ...base('main, origin/main')], heads: MAIN, trees: [app(32)], mine: [1, 30, 31, 32], hold: 27 },
+  { hist: [[40, [4, 32], 'HEAD -> main', 'ana', 0, "Merge branch 'feat/search'"], ...picked(3, 'feat/search'), [1, [4], '', 'ana', 30, FEAT[5]], ...base('origin/main')], heads: MAIN, trees: [tree('app', 40, 'main', true)], mine: [1, 30, 31, 32, 40], hold: 30 },
+  { hist: [[40, [4, 32], 'HEAD -> main, origin/main', 'ana', 0, "Merge branch 'feat/search'"], ...picked(3, 'feat/search'), [1, [4], '', 'ana', 30, FEAT[5]], ...base('')], heads: MAIN, trees: [tree('app', 40, 'main', true)], mine: [1, 30, 31, 32, 40], hold: 51 },
+]
+function flow(dir: string) {
+  CHANGED = 0
+  TREE_CHANGES = {}
+  const empty = { open: '', refOpen: '', card: { body: [], files: [] } }
+  const stage = (st: Stage) => ((LOG = toLog(st.hist)), (REFS = { heads: st.heads, tracks: {}, trees: st.trees }))
+  // every frame is as tall as the tallest scene, plus one spare row
+  const rows = Math.max(...STAGES.map(st => (stage(st), pane({ ...empty, mine: new Set() }).y))) + 1
+  mkdirSync(dir, { recursive: true })
+  let f = 0
+  for (const st of STAGES) {
+    stage(st)
+    for (let k = 0; k < st.hold; k++, f++) {
+      GLOW = glowAt(C.glow, C.sel, f)
+      writeFileSync(`${dir}/f${String(f).padStart(4, '0')}.svg`, svg(W, rows, pane({ ...empty, mine: new Set(st.mine.map(H)) }).out, 'Git graph'))
+    }
+  }
+  console.log(f, 'frames')
+}
+
+if (process.argv[2] === '--flow') flow(process.argv[3]!)
+else {
+  mkdirSync('assets', { recursive: true })
+  writeFileSync('assets/claude.svg', session())
+  writeFileSync('assets/legend.ko.svg', legend('ko'))
+  writeFileSync('assets/legend.en.svg', legend('en'))
+  console.log('wrote assets/claude.svg, assets/legend.ko.svg, assets/legend.en.svg')
+}
