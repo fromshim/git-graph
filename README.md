@@ -3,7 +3,7 @@
 [한국어](README.md) | [English](README.en.md)
 
 <p align="center">
-  <img src="assets/preview.svg" alt="git-graph 패널 미리보기: 가지마다 색이 다른 커밋 그래프, 칩, 펼친 커밋 카드" width="720">
+  <img src="assets/flow.gif" alt="서브에이전트 워크트리 3개가 각자 커밋하고 부모 세션이 한 줄로 모아 main 에 --no-ff 로 머지하는 git-graph 패널" width="720">
 </p>
 
 Claude Code 터미널 옆 패널에 저장소의 git 그래프를 실시간으로 그리는 mod 입니다.
@@ -90,7 +90,7 @@ claude plugin validate .
 claude plugin test .
 ```
 
-미리보기 다시 그리기: `npx -y tsx scripts/preview.ts` 를 저장소 루트에서 실행하면 `assets/` 의 SVG 를 `core/` 레이아웃으로 다시 만듭니다.
+미리보기 다시 그리기: `npx -y tsx scripts/preview.ts` 를 저장소 루트에서 실행하면 `assets/` 의 SVG 를 `core/` 레이아웃으로 다시 만듭니다. `scripts/flow.sh` 는 Chrome 과 ffmpeg 로 `assets/flow.gif` 를 만듭니다.
 
 ### 구조
 

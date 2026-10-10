@@ -3,7 +3,7 @@
 [한국어](README.md) | [English](README.en.md)
 
 <p align="center">
-  <img src="assets/preview.svg" alt="git-graph pane preview: a commit graph with one color per lane, chips and an expanded commit card" width="720">
+  <img src="assets/flow.gif" alt="git-graph pane: three subagent worktrees each commit, then the parent session gathers them into one line and merges into main with --no-ff" width="720">
 </p>
 
 A Claude Code mod that draws your repository's git graph, live, in a side pane next to the terminal.
@@ -90,7 +90,7 @@ claude plugin validate .
 claude plugin test .
 ```
 
-Regenerate the preview: run `npx -y tsx scripts/preview.ts` from the repo root to redraw the SVGs in `assets/` with the `core/` layout.
+Regenerate the preview: run `npx -y tsx scripts/preview.ts` from the repo root to redraw the SVGs in `assets/` with the `core/` layout. `scripts/flow.sh` builds `assets/flow.gif` with Chrome and ffmpeg.
 
 ### Structure
 
