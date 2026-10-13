@@ -275,18 +275,21 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity)
       <Box key={`ref-card:${row.hash}`} flexDirection="column" marginLeft={2} borderStyle="round" borderColor={C.sel} paddingX={1}>
         {p.locals.map(l => (
           <Text key={`ref:b:${l.name}`}>
-            <Text color={C.green}>{`⎇ ${l.name}`}</Text>
-            <Text color={C.gray}>{`  ${l.sync}`}</Text>
+            {l.origin && <Text backgroundColor={tint(C.red)} color={C.white}>{` ⌂ origin/${l.name} `}</Text>}
+            {l.origin && ' '}
+            <Text backgroundColor={tint(C.green)} color={C.white}>{` ⎇ ${l.name} `}</Text>
+            {l.sync && <Text color={C.gray}>{`  ${l.sync}`}</Text>}
+            {l.isCurrent && <Text color={C.glow}>  현재 세션</Text>}
           </Text>
         ))}
-        {p.remotes.map(r => <Text key={`ref:r:${r}`} color={C.red}>{`⌂ ${r}`}</Text>)}
-        {p.tags.map(t => <Text key={`ref:t:${t}`} color={C.orange}>{`# ${t}`}</Text>)}
+        {p.remotes.map(r => <Text key={`ref:r:${r}`} backgroundColor={tint(C.red)} color={C.white}>{` ⌂ ${r} `}</Text>)}
+        {p.tags.map(t => <Text key={`ref:t:${t}`} backgroundColor={tint(C.orange)} color={C.white}>{` # ${t} `}</Text>)}
         {p.trees.map(t => (
           <Box key={`ref:w:${t.path}`} flexDirection="column">
             <Text>
               <Text bold color={t.isSelf ? C.glow : C.purple}>{`⑂ ${t.name}`}</Text>
               <Text color={t.branch ? C.green : C.yellow}>{t.branch ? `  ⎇ ${t.branch}` : `  ${t.head.slice(0, 7)} (detached)`}</Text>
-              {t.isSelf && <Text color={C.glow}>  이 세션</Text>}
+              {t.isSelf && <Text color={C.glow}>  현재 세션</Text>}
             </Text>
             <Text color={C.gray} wrap="truncate-start">{`  ${t.path}`}</Text>
             <Text color={C.gray}>{`  변경 ${treeStatus[t.path] === undefined ? '…' : treeStatus[t.path] === '?' ? '?' : `${treeStatus[t.path]}개`}`}</Text>

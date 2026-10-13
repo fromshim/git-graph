@@ -22,7 +22,7 @@ The graph sits right next to the conversation, so you can hand commits to Claude
 - Click a file line in the card to insert `@path` at the prompt cursor.
 - Commits Claude made in this session get a `✦` before the subject, including ones a subagent made in another worktree.
 - Click the `커밋 안 한 변경 N개` (uncommitted changes) line to list the changed files; its `커밋 메시지 정리` (draft a commit message) button fills the prompt box with `지금 변경을 커밋 메시지로 정리해줘`.
-- Press a chip (branch, remote, tag, worktree) and a list opens under that row: local branches (with their origin state), remote branches, tags and worktrees (path, uncommitted change count). This session's worktree is marked `이 세션` and drawn in yellow, and this session's HEAD dot glows yellow.
+- Press a chip (branch, remote, tag, worktree) and a list opens under that row: local branches (with their origin state), remote branches, tags and worktrees (path, uncommitted change count). The branch and worktree this session has checked out are marked `현재 세션` in yellow, and this session's HEAD dot glows yellow.
 - Turn on `원격 확인` (check remote) to run `git fetch` every 60 seconds and get a toast when origin gets new commits.
 - Turn on `경로 강조` (highlight path) to gray out rows that are not ancestors of HEAD.
 
@@ -49,7 +49,7 @@ Chips other than `HEAD` and the author chip are buttons on a dark tint of the ch
 | Chip | Meaning |
 | --- | --- |
 | `⎇ name` | local branch |
-| `⎇ name =` | same commit as origin |
+| `⌂⎇ name` | same commit as origin |
 | `⎇ name ↑n ↓n` | commits ahead of / behind origin |
 | `⌂ name` | remote branch |
 | `# name` | tag |

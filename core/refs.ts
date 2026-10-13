@@ -18,7 +18,7 @@ function parse(decor: string, known: GraphRefs) {
 // the worktrees on one commit (none while there is only the one: it is just the repo)
 export const treesAt = (hash: string, known: GraphRefs): GraphTree[] => (known.trees.length > 1 ? known.trees.filter(t => t.head === hash) : [])
 
-// local ⎇ (= when origin points at the same commit, ↑↓ when it does not), remote ⌂, tag #,
+// local ⎇ (⌂⎇ when origin points at the same commit, ↑↓ when it does not), remote ⌂, tag #,
 // worktree ⑂ (only once there is more than one; this session's own in yellow)
 export function refChips(decor: string, hash = '', known: GraphRefs = NO_REFS): { chips: Seg[]; isHead: boolean } {
   const { isHead, names, locals } = parse(decor, known)
@@ -33,22 +33,27 @@ export function refChips(decor: string, hash = '', known: GraphRefs = NO_REFS): 
     else if (r.startsWith('origin/') && locals.has(r.slice(7))) continue
     else if (!locals.has(r)) chips.push(chip(`⌂ ${r}`, C.red))
     else {
-      const sync = names.includes(`origin/${r}`) ? '=' : known.tracks[r] ?? ''
-      chips.push(chip(sync ? `⎇ ${r} ${sync}` : `⎇ ${r}`, C.green))
+      const sync = known.tracks[r] ?? ''
+      chips.push(chip(names.includes(`origin/${r}`) ? `⌂⎇ ${r}` : sync ? `⎇ ${r} ${sync}` : `⎇ ${r}`, C.green))
     }
   }
   return { chips, isHead }
 }
 
-export type Pointers = { locals: { name: string; sync: string }[]; remotes: string[]; tags: string[]; trees: GraphTree[] }
+export type Pointers = { locals: { name: string; origin: boolean; sync: string; isCurrent: boolean }[]; remotes: string[]; tags: string[]; trees: GraphTree[] }
 
-// what points at one commit, for its card: each local branch with its origin state
-// ("= origin", "↑a ↓b", or "no upstream"), remote branches, tags, and its worktrees
+// what points at one commit, for its card: each local branch with its origin state (origin: origin/<name> is
+// on this commit, sync '' then; else sync is "↑a ↓b" or "no upstream"), whether this session has it checked
+// out (isCurrent), remote branches, tags, and its worktrees
 // ponytail: a branch whose upstream is gone reads "no upstream"; for-each-ref's [gone] is dropped by track()
 export function pointers(decor: string, hash: string, known: GraphRefs): Pointers {
-  const { names, locals } = parse(decor, known)
+  const { isHead, names, locals } = parse(decor, known)
+  const current = isHead ? /HEAD -> ([^,]+)/.exec(decor)?.[1] : undefined
   return {
-    locals: [...locals].map(name => ({ name, sync: names.includes(`origin/${name}`) ? '= origin' : known.tracks[name] || 'no upstream' })),
+    locals: [...locals].map(name => {
+      const origin = names.includes(`origin/${name}`)
+      return { name, origin, sync: origin ? '' : known.tracks[name] || 'no upstream', isCurrent: name === current }
+    }),
     remotes: names.filter(r => !r.startsWith('tag: ') && !locals.has(r) && !(r.startsWith('origin/') && locals.has(r.slice(7)))),
     tags: names.filter(r => r.startsWith('tag: ')).map(r => r.slice(5)),
     trees: treesAt(hash, known),

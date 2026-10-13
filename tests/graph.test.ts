@@ -33,7 +33,7 @@ const PROPS = {
 test('refs become chips: local+origin merged, remote and tag apart, origin/HEAD dropped', () => {
   const { chips, isHead } = refChips('HEAD -> main, origin/main, origin/HEAD, tag: v1, origin/feat/x')
   expect(isHead).toBe(true)
-  expect(chips.map(c => c.text)).toEqual([' ⎇ main = ', ' # v1 ', ' ⌂ origin/feat/x '])
+  expect(chips.map(c => c.text)).toEqual([' ⌂⎇ main ', ' # v1 ', ' ⌂ origin/feat/x '])
 })
 
 test('upstream tracking and worktrees become chips', () => {
@@ -63,12 +63,18 @@ test('pointers list what is on one commit: branches with their origin state, rem
   const tree = (name: string, isSelf: boolean) => ({ name, path: `/r/${name}`, head: 'aaa', branch: '', isSelf })
   const known = { heads: ['main', 'feat', 'lone'], tracks: { feat: '↑1 ↓2' }, trees: [tree('main', false), tree('wt', true)] }
   expect(pointers('HEAD -> main, origin/main, origin/HEAD, feat, lone, origin/x, tag: v1', 'aaa', known)).toEqual({
-    locals: [{ name: 'main', sync: '= origin' }, { name: 'feat', sync: '↑1 ↓2' }, { name: 'lone', sync: 'no upstream' }],
+    locals: [
+      { name: 'main', origin: true, sync: '', isCurrent: true },
+      { name: 'feat', origin: false, sync: '↑1 ↓2', isCurrent: false },
+      { name: 'lone', origin: false, sync: 'no upstream', isCurrent: false },
+    ],
     remotes: ['origin/x'],
     tags: ['v1'],
     trees: known.trees,
   })
   expect(pointers('', 'zzz', known).trees).toEqual([])
+  // without HEAD -> on the commit, nothing is current
+  expect(pointers('main, feat', 'aaa', known).locals.map(l => l.isCurrent)).toEqual([false, false])
 })
 
 test('tint mixes a color a little into the pane background, so a light label stays readable on it', () => {
@@ -237,7 +243,7 @@ test('a ref chip is a tinted button: it opens a list under its row (one at a tim
     expect(await ui.find({ key: 'trees' })).toBeUndefined()
     // the chips: this session's worktree, the branch with origin state, the tag; each on a tinted Box
     expect((await ui.find({ key: 'r:aaaaaaa:0' }))?.text).toBe('⑂ repo')
-    expect((await ui.find({ key: 'r:aaaaaaa:1' }))?.text).toBe('⎇ main =')
+    expect((await ui.find({ key: 'r:aaaaaaa:1' }))?.text).toBe('⌂⎇ main')
     expect((await ui.find({ key: 'r:aaaaaaa:2' }))?.text).toBe('# v1')
     expect((await ui.find({ key: 'box:r:aaaaaaa:1' }))?.props.backgroundColor).toBe(tint(C.green))
     expect((await ui.find({ key: 'box:r:aaaaaaa:0' }))?.props.backgroundColor).toBe(tint(C.glow))
@@ -247,13 +253,19 @@ test('a ref chip is a tinted button: it opens a list under its row (one at a tim
     // the commit card has no pointer section now
     await ui.press({ key: 'c:aaaaaaa' })
     expect(await ui.find({ key: 'ref:b:main' })).toBeUndefined()
-    expect(await shown()).not.toContain('  = origin')
+    expect(await shown()).not.toContain('  현재 세션')
     await ui.press({ key: 'c:aaaaaaa' })
     // a chip press opens the list: branch with origin state, tag, the worktree on it marked as this session's
     await ui.press({ key: 'r:aaaaaaa:1' })
     expect(await ui.find({ key: 'ref-card:aaaaaaa1' })).toBeDefined()
-    expect(await shown()).toEqual(expect.arrayContaining(['⎇ main', '  = origin', '# v1', '⑂ repo', '  ⎇ main', '  /repo', '  이 세션', '  변경 2개']))
-    expect((await ui.findAll({ type: 'Text', text: '이 세션' })).find(t => t.text === '  이 세션')?.props.color).toBe(C.glow)
+    expect(await shown()).toEqual(expect.arrayContaining([' ⌂ origin/main ', ' ⎇ main ', ' # v1 ', '⑂ repo', '  ⎇ main', '  /repo', '  변경 2개']))
+    // the two blocks for main on their tints, `현재 세션` after the branch and after the worktree, both glowing
+    const block = async (t: string) => (await ui.findAll({ type: 'Text', text: t })).find(x => x.text === t)
+    expect((await block(' ⌂ origin/main '))?.props.backgroundColor).toBe(tint(C.red))
+    expect((await block(' ⎇ main '))?.props.backgroundColor).toBe(tint(C.green))
+    expect((await block(' # v1 '))?.props.backgroundColor).toBe(tint(C.orange))
+    const marks = (await ui.findAll({ type: 'Text', text: '  현재 세션' })).filter(x => x.text === '  현재 세션')
+    expect(marks.map(m => m.props.color)).toEqual([C.glow, C.glow])
     // another row's chip moves it
     await ui.press({ key: 'r:bbbbbbb:0' })
     expect(await ui.find({ key: 'ref-card:aaaaaaa1' })).toBeUndefined()
