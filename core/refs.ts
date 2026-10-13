@@ -40,6 +40,44 @@ export function refChips(decor: string, hash = '', known: GraphRefs = NO_REFS): 
   return { chips, isHead }
 }
 
+const MIN_NAME = 6
+// shortcut: counts code points, so a wide (CJK) name reads narrower than it draws; measure cells if such names show up
+const cells = (s: string) => [...s].length
+// a chip draws its trimmed text + paddingX 1 on each side + marginRight 1
+const cost = (c: Seg) => cells(c.text.trim()) + 3
+
+// icon token, name, sync suffix of a chip; a `⑂ ×5` group has no name to shorten
+function split(c: Seg) {
+  const t = c.text.trim()
+  const sp = t.indexOf(' ')
+  const m = /^(.*?)((?: [↑↓]\d+)*)$/.exec(t.slice(sp + 1))
+  return sp < 0 || !m || /^×\d+$/.test(m[1]!) ? null : { icon: t.slice(0, sp), name: m[1]!, sync: m[2]! }
+}
+
+// chips that fit `room` cells: whole, else names cut to a middle ellipsis (longest first), else the tail folded into one +N
+export function fitChips(chips: Seg[], room: number): Seg[] {
+  const total = (cs: Seg[]) => cs.reduce((n, c) => n + cost(c), 0)
+  if (total(chips) <= room) return chips
+  const parts = chips.map(split)
+  const longest = Math.max(0, ...parts.map(p => (p ? cells(p.name) : 0)))
+  let cut = chips
+  for (let L = longest - 1; L >= MIN_NAME; L--) {
+    cut = chips.map((c, i) => {
+      const p = parts[i]
+      const n = p ? [...p.name] : []
+      if (!p || n.length <= L) return c
+      const name = n.slice(0, Math.ceil((L - 1) / 2)).join('') + '…' + n.slice(n.length - Math.floor((L - 1) / 2)).join('')
+      return { ...c, text: ` ${p.icon} ${name}${p.sync} ` }
+    })
+    if (total(cut) <= room) return cut
+  }
+  for (let keep = cut.length - 1; keep >= 0; keep--) {
+    const out = [...cut.slice(0, keep), chip(`+${cut.length - keep}`, C.gray)]
+    if (total(out) <= room || keep === 0) return out
+  }
+  return cut
+}
+
 export type Pointers = { locals: { name: string; origin: boolean; sync: string; isCurrent: boolean }[]; remotes: string[]; tags: string[]; trees: GraphTree[] }
 
 // what points at one commit, for its card: each local branch with its origin state (origin: origin/<name> is

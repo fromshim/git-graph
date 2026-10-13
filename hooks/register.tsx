@@ -9,7 +9,7 @@ import { ancestors, dim } from '../core/ancestry.ts'
 import { NEW, parseChanges } from '../core/changes.ts'
 import { addMine, moved } from '../core/mine.ts'
 import { grown } from '../core/remote.ts'
-import { pointers, track, trees, treesAt } from '../core/refs.ts'
+import { fitChips, pointers, track, trees, treesAt } from '../core/refs.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { PULSE_MS, breath, dotCells, splitDot } from '../core/pulse.ts'
 import { parseShow } from '../core/show.ts'
@@ -36,6 +36,7 @@ const mine = atom({ plugin: 'git-graph', key: 'mine' } as const, [])
 
 const FOLDED_LANES = 3
 const WIDE = 72
+const SUBJECT_MIN = 12
 // ponytail: the terminal draws a tree of any size; the desktop is held to core/budget.ts, which cuts rows
 const MAX_FILES = 30
 
@@ -224,6 +225,7 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity)
   const Raster = e.surface === 'terminal' && 'Raster' in els ? els.Raster : undefined
   // a remote surface (the desktop) scrolls its pane itself and may send no window: read it as the top
   const scroll = e.props.scroll ?? { offset: 0, bodyRows: e.viewport?.rows ?? 30 }
+  const bodyColumns = e.props.bodyColumns ?? WIDE
   const msg = await read($, note)
 
   if (msg)
@@ -427,6 +429,10 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity)
           ...(split.after.length > 0 ? [<Text>{split.after.map(seg)}</Text>] : []),
         ]
       : [<Text>{paint(row.graph).map(seg)}</Text>]
+    // cells the chips may take: the pane minus graph, HEAD chip, ✦, the right column (margin, author, hash, age) and a minimum subject
+    const room =
+      bodyColumns - row.graph.reduce((n, g) => n + [...g.text].length, 0) - (row.isHead ? 'HEAD'.length + 3 : 0) - (made.has(row.hash) ? 2 : 0) -
+      (1 + AUTHOR_CELLS + 2 + 1 + row.short.length + 4) - SUBJECT_MIN
     return (
       <Box
         key={`${pin}${row.hash}`}
@@ -442,7 +448,7 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity)
               {paint([chip('HEAD', C.blue)]).map(seg)}
             </Box>
           )}
-          {paint(row.refs).map((c, i) => (
+          {paint(fitChips(row.refs, room)).map((c, i) => (
             // a button on a dark tint of the chip's color; a keyed Box around it gives the hover its anchor
             <Box key={`${pin}box:r:${row.short}:${i}`} flexShrink={0} marginRight={1} paddingX={1} backgroundColor={tint(c.backgroundColor ?? C.gray)}>
               <Button

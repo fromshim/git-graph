@@ -6,7 +6,7 @@ import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
 import { review } from '../core/prompt.ts'
 import { splitDot } from '../core/pulse.ts'
-import { pointers, refChips, track } from '../core/refs.ts'
+import { fitChips, pointers, refChips, track } from '../core/refs.ts'
 import { C, chip, mix, personColor, rgb, tint } from '../core/theme.ts'
 import type { Seg } from '../core/theme.ts'
 import type { GraphRefs } from '../types'
@@ -175,7 +175,9 @@ function pane(v: View): { out: string[]; y: number } {
     const graph = dot ? [...dot.before, { text: '●', color: GLOW }, ...dot.after] : r.graph
     let col = graph.reduce(put, 0)
     const right = W - 20
-    const head = [...(r.isHead ? [chip('HEAD', C.blue)] : []), ...r.refs.map(button)]
+    // same room as register.tsx: the pane minus graph, HEAD chip, ✦, the 20-cell right block and a 12-cell subject
+    const room = right - col - (r.isHead ? 7 : 0) - (v.mine.has(r.hash) ? 2 : 0) - 12
+    const head = [...(r.isHead ? [chip('HEAD', C.blue)] : []), ...fitChips(r.refs, room).map(button)]
     const items: Seg[] = [...head.flatMap(s => [s, { text: ' ' }]), ...(v.mine.has(r.hash) ? [{ text: '✦ ', color: C.yellow }] : []), { text: r.subject, color: r.isHead ? C.white : C.fg, bold: r.isHead }]
     fit(items, right - col).reduce(put, col)
     // right block (register.tsx): margin 1, author chip, short hash, age

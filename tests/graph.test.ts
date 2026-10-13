@@ -3,13 +3,13 @@ import { expect, mock, test } from 'claude-code/testing'
 import { BUDGET, MIN_ROWS, fitRows } from '../core/budget.ts'
 import { layout } from '../core/layout.ts'
 import { grown } from '../core/remote.ts'
-import { age, pointers, refChips, track, trees } from '../core/refs.ts'
+import { age, fitChips, pointers, refChips, track, trees } from '../core/refs.ts'
 import { ancestors, dim } from '../core/ancestry.ts'
 import { parseChanges } from '../core/changes.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { MINE_CAP, addMine, moved } from '../core/mine.ts'
 import { parseShow } from '../core/show.ts'
-import { C, tint } from '../core/theme.ts'
+import { C, chip, tint } from '../core/theme.ts'
 import { breath, dotCells, splitDot } from '../core/pulse.ts'
 
 const S = '\x1f'
@@ -34,6 +34,47 @@ test('refs become chips: local+origin merged, remote and tag apart, origin/HEAD 
   const { chips, isHead } = refChips('HEAD -> main, origin/main, origin/HEAD, tag: v1, origin/feat/x')
   expect(isHead).toBe(true)
   expect(chips.map(c => c.text)).toEqual([' ⌂⎇ main ', ' # v1 ', ' ⌂ origin/feat/x '])
+})
+
+const CHIPS = [chip('⎇ feature/very-long-branch-name ↑2 ↓1', C.green), chip('⌂ origin/dev', C.red), chip('# v1', C.orange)]
+const wide = (cs: { text: string }[]) => cs.reduce((n, c) => n + [...c.text.trim()].length + 3, 0)
+
+test('fitChips: whole when roomy, middle ellipsis longest first, then +N, then +N alone', () => {
+  expect(fitChips(CHIPS, 200)).toBe(CHIPS)
+  // tight: only the long name shrinks (icon and sync kept), the short ones stay whole
+  const cut = fitChips(CHIPS, 52)
+  expect(cut[0]!.text).toMatch(/^ ⎇ .+…[^ ]+ ↑2 ↓1 $/)
+  expect(cut[1]!.text).toBe(' ⌂ origin/dev ')
+  expect(wide(cut)).toBeLessThanOrEqual(52)
+  expect(cut[0]!.color).toBe(C.bg)
+  expect(cut[0]!.backgroundColor).toBe(C.green)
+  // tighter: names at 6, tail chips fold into +N in gray
+  const fold = fitChips(CHIPS, 30)
+  expect(fold.at(-1)).toEqual(chip('+2', C.gray))
+  expect(fold[0]!.text).toBe(' ⎇ fea…me ↑2 ↓1 ')
+  expect(wide(fold)).toBeLessThanOrEqual(30)
+  // tiny: just +N
+  expect(fitChips(CHIPS, 2)).toEqual([chip('+3', C.gray)])
+})
+
+test('a long branch name is cut to fit a narrow pane and the subject stays', async ($, on) => {
+  const out = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+  const long = 'feature/a-very-long-branch-name-here'
+  on('process.run', async (_, e) => {
+    if (e.argv[1] === 'rev-parse') return out('/repo\n')
+    if (e.argv[1] === 'log') return out(log('aaaaaaa1', '', `HEAD -> ${long}`, 'ana', 'keep this subject'))
+    return out('')
+  })
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: { ...PROPS, bodyColumns: 60 }, requestId: 'git-graph' })
+  const chipText = (await ui.find({ key: 'r:aaaaaaa:0' }))?.text ?? ''
+  expect(chipText).toContain('…')
+  expect(chipText).not.toBe(`⎇ ${long}`)
+  expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('keep this subject')
+  await ui.unmount()
 })
 
 test('upstream tracking and worktrees become chips', () => {
