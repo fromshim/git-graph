@@ -378,18 +378,18 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity)
     <Box key={`${pin}bar`}>
       {lanes > FOLDED_LANES && (
         // a hover needs a keyed Box around it to know what the pointer is over
-        <Box key={`${pin}lanes-bar`} marginRight={2}>
+        <Box key={`${pin}lanes-bar`} marginRight={1} paddingX={1} backgroundColor={C.sel}>
           <Button key={`${pin}lanes`} plain dimColor hover={{ color: C.blue }} onPress={() => void update($, wide, v => !v)}>
             {isWide ? '◂ 가지 접기' : `▸ 가지 ${lanes}개 모두 보기`}
           </Button>
         </Box>
       )}
-      <Box key={`${pin}remote-bar`} marginRight={2}>
+      <Box key={`${pin}remote-bar`} marginRight={1} paddingX={1} backgroundColor={C.sel}>
         <Button key={`${pin}remote`} plain dimColor={!isWatch} hover={{ color: C.blue }} onPress={() => void toggleWatch($).catch(() => {})}>
           {isWatch ? '원격 확인 끄기' : '원격 확인'}
         </Button>
       </Box>
-      <Box key={`${pin}trace-bar`}>
+      <Box key={`${pin}trace-bar`} paddingX={1} backgroundColor={C.sel}>
         <Button key={`${pin}trace`} plain dimColor={!isOn} hover={{ color: C.blue }} onPress={() => void update($, isTraced, v => !v)}>
           {isOn ? '경로 강조 끄기' : '경로 강조'}
         </Button>
