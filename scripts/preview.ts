@@ -6,7 +6,7 @@ import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
 import { review } from '../core/prompt.ts'
 import { splitDot } from '../core/pulse.ts'
-import { pointers, refChips, track } from '../core/refs.ts'
+import { fitChips, pointers, refChips, track } from '../core/refs.ts'
 import { C, chip, mix, personColor, rgb, tint } from '../core/theme.ts'
 import type { Seg } from '../core/theme.ts'
 import type { GraphRefs } from '../types'
@@ -175,7 +175,9 @@ function pane(v: View): { out: string[]; y: number } {
     const graph = dot ? [...dot.before, { text: '●', color: GLOW }, ...dot.after] : r.graph
     let col = graph.reduce(put, 0)
     const right = W - 20
-    const head = [...(r.isHead ? [chip('HEAD', C.blue)] : []), ...r.refs.map(button)]
+    // same room as register.tsx: the pane minus graph, HEAD chip, ✦, the 20-cell right block and a 12-cell subject
+    const room = right - col - (r.isHead ? 7 : 0) - (v.mine.has(r.hash) ? 2 : 0) - 12
+    const head = [...(r.isHead ? [chip('HEAD', C.blue)] : []), ...fitChips(r.refs, room).map(button)]
     const items: Seg[] = [...head.flatMap(s => [s, { text: ' ' }]), ...(v.mine.has(r.hash) ? [{ text: '✦ ', color: C.yellow }] : []), { text: r.subject, color: r.isHead ? C.white : C.fg, bold: r.isHead }]
     fit(items, right - col).reduce(put, col)
     // right block (register.tsx): margin 1, author chip, short hash, age
@@ -224,9 +226,20 @@ function frame(out: string[], y0: number, lines: ((x: number, y: number) => stri
 function refCard(out: string[], y0: number, r: Row): number {
   const p = pointers(r.decor, r.hash, REFS)
   const lines: ((x: number, y: number) => string)[] = [
-    ...p.locals.map(l => (x: number, y: number) => text(x, y, `⎇ ${l.name}`, { fill: C.green }) + text(x + width(`⎇ ${l.name}`), y, `  ${l.sync}`, { fill: C.gray })),
-    ...p.remotes.map(n => (x: number, y: number) => text(x, y, `⌂ ${n}`, { fill: C.red })),
-    ...p.tags.map(n => (x: number, y: number) => text(x, y, `# ${n}`, { fill: C.orange })),
+    ...p.locals.map(l => (x: number, y: number) => {
+      let s = ''
+      for (const c of [...(l.origin ? [chip(`⌂ origin/${l.name}`, C.red)] : []), chip(`⎇ ${l.name}`, C.green)]) {
+        const [m, next] = seg(x, y, button(c))
+        s += m
+        x = next + 1
+      }
+      x--
+      for (const [t, fill] of [[l.sync && `  ${l.sync}`, C.gray], [l.isCurrent && '  현재 세션', C.glow]] as const)
+        if (t) (s += text(x, y, t, { fill }), (x += width(t)))
+      return s
+    }),
+    ...p.remotes.map(n => (x: number, y: number) => seg(x, y, button(chip(`⌂ ${n}`, C.red)))[0]),
+    ...p.tags.map(n => (x: number, y: number) => seg(x, y, button(chip(`# ${n}`, C.orange)))[0]),
     ...p.trees.flatMap(t => [
       (x: number, y: number) => {
         const name = `⑂ ${t.name}`
@@ -234,7 +247,7 @@ function refCard(out: string[], y0: number, r: Row): number {
         return (
           text(x, y, name, { fill: t.isSelf ? C.glow : C.purple, bold: true }) +
           text(x + width(name), y, branch, { fill: t.branch ? C.green : C.yellow }) +
-          (t.isSelf ? text(x + width(name + branch), y, '  이 세션', { fill: C.glow }) : '')
+          (t.isSelf ? text(x + width(name + branch), y, '  현재 세션', { fill: C.glow }) : '')
         )
       },
       (x: number, y: number) => text(x, y, `  ${t.path}`, { fill: C.gray }),
@@ -328,7 +341,7 @@ function session(): string {
 
 // ---- chip legend ----
 const LEGEND: Record<'ko' | 'en', string[]> = {
-  ko: ['현재 체크아웃한 커밋', '로컬 브랜치', 'origin 과 같은 커밋', 'origin 보다 앞서거나 뒤처진 커밋 수', '원격 브랜치', '태그', '워크트리 (둘 이상일 때만)', '이 세션의 워크트리', '한 커밋에 넷 이상이면 묶어서'],
+  ko: ['현재 체크아웃한 커밋', '로컬 브랜치', 'origin 과 같은 커밋', 'origin 보다 앞서거나 뒤처진 커밋 수', '원격 브랜치', '태그', '워크트리 (둘 이상일 때만)', '현재 세션의 워크트리', '한 커밋에 넷 이상이면 묶어서'],
   en: ['checked-out commit', 'local branch', 'same commit as origin', 'commits ahead of / behind origin', 'remote branch', 'tag', 'worktree (only when there are several)', 'this session\'s worktree', 'four or more on one commit, grouped'],
 }
 function legend(lang: 'ko' | 'en'): string {

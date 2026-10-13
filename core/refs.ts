@@ -18,7 +18,7 @@ function parse(decor: string, known: GraphRefs) {
 // the worktrees on one commit (none while there is only the one: it is just the repo)
 export const treesAt = (hash: string, known: GraphRefs): GraphTree[] => (known.trees.length > 1 ? known.trees.filter(t => t.head === hash) : [])
 
-// local ⎇ (= when origin points at the same commit, ↑↓ when it does not), remote ⌂, tag #,
+// local ⎇ (⌂⎇ when origin points at the same commit, ↑↓ when it does not), remote ⌂, tag #,
 // worktree ⑂ (only once there is more than one; this session's own in yellow)
 export function refChips(decor: string, hash = '', known: GraphRefs = NO_REFS): { chips: Seg[]; isHead: boolean } {
   const { isHead, names, locals } = parse(decor, known)
@@ -33,22 +33,65 @@ export function refChips(decor: string, hash = '', known: GraphRefs = NO_REFS): 
     else if (r.startsWith('origin/') && locals.has(r.slice(7))) continue
     else if (!locals.has(r)) chips.push(chip(`⌂ ${r}`, C.red))
     else {
-      const sync = names.includes(`origin/${r}`) ? '=' : known.tracks[r] ?? ''
-      chips.push(chip(sync ? `⎇ ${r} ${sync}` : `⎇ ${r}`, C.green))
+      const sync = known.tracks[r] ?? ''
+      chips.push(chip(names.includes(`origin/${r}`) ? `⌂⎇ ${r}` : sync ? `⎇ ${r} ${sync}` : `⎇ ${r}`, C.green))
     }
   }
   return { chips, isHead }
 }
 
-export type Pointers = { locals: { name: string; sync: string }[]; remotes: string[]; tags: string[]; trees: GraphTree[] }
+const MIN_NAME = 6
+// shortcut: counts code points, so a wide (CJK) name reads narrower than it draws; measure cells if such names show up
+const cells = (s: string) => [...s].length
+// a chip draws its trimmed text + paddingX 1 on each side + marginRight 1
+const cost = (c: Seg) => cells(c.text.trim()) + 3
 
-// what points at one commit, for its card: each local branch with its origin state
-// ("= origin", "↑a ↓b", or "no upstream"), remote branches, tags, and its worktrees
+// icon token, name, sync suffix of a chip; a `⑂ ×5` group has no name to shorten
+function split(c: Seg) {
+  const t = c.text.trim()
+  const sp = t.indexOf(' ')
+  const m = /^(.*?)((?: [↑↓]\d+)*)$/.exec(t.slice(sp + 1))
+  return sp < 0 || !m || /^×\d+$/.test(m[1]!) ? null : { icon: t.slice(0, sp), name: m[1]!, sync: m[2]! }
+}
+
+// chips that fit `room` cells: whole, else names cut to a middle ellipsis (longest first), else the tail folded into one +N
+export function fitChips(chips: Seg[], room: number): Seg[] {
+  const total = (cs: Seg[]) => cs.reduce((n, c) => n + cost(c), 0)
+  if (total(chips) <= room) return chips
+  const parts = chips.map(split)
+  const longest = Math.max(0, ...parts.map(p => (p ? cells(p.name) : 0)))
+  let cut = chips
+  for (let L = longest - 1; L >= MIN_NAME; L--) {
+    cut = chips.map((c, i) => {
+      const p = parts[i]
+      const n = p ? [...p.name] : []
+      if (!p || n.length <= L) return c
+      const name = n.slice(0, Math.ceil((L - 1) / 2)).join('') + '…' + n.slice(n.length - Math.floor((L - 1) / 2)).join('')
+      return { ...c, text: ` ${p.icon} ${name}${p.sync} ` }
+    })
+    if (total(cut) <= room) return cut
+  }
+  for (let keep = cut.length - 1; keep >= 0; keep--) {
+    const out = [...cut.slice(0, keep), chip(`+${cut.length - keep}`, C.gray)]
+    if (total(out) <= room || keep === 0) return out
+  }
+  return cut
+}
+
+export type Pointers = { locals: { name: string; origin: boolean; sync: string; isCurrent: boolean }[]; remotes: string[]; tags: string[]; trees: GraphTree[] }
+
+// what points at one commit, for its card: each local branch with its origin state (origin: origin/<name> is
+// on this commit, sync '' then; else sync is "↑a ↓b" or "no upstream"), whether this session has it checked
+// out (isCurrent), remote branches, tags, and its worktrees
 // ponytail: a branch whose upstream is gone reads "no upstream"; for-each-ref's [gone] is dropped by track()
 export function pointers(decor: string, hash: string, known: GraphRefs): Pointers {
-  const { names, locals } = parse(decor, known)
+  const { isHead, names, locals } = parse(decor, known)
+  const current = isHead ? /HEAD -> ([^,]+)/.exec(decor)?.[1] : undefined
   return {
-    locals: [...locals].map(name => ({ name, sync: names.includes(`origin/${name}`) ? '= origin' : known.tracks[name] || 'no upstream' })),
+    locals: [...locals].map(name => {
+      const origin = names.includes(`origin/${name}`)
+      return { name, origin, sync: origin ? '' : known.tracks[name] || 'no upstream', isCurrent: name === current }
+    }),
     remotes: names.filter(r => !r.startsWith('tag: ') && !locals.has(r) && !(r.startsWith('origin/') && locals.has(r.slice(7)))),
     tags: names.filter(r => r.startsWith('tag: ')).map(r => r.slice(5)),
     trees: treesAt(hash, known),

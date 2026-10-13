@@ -9,7 +9,7 @@ import { ancestors, dim } from '../core/ancestry.ts'
 import { NEW, parseChanges } from '../core/changes.ts'
 import { addMine, moved } from '../core/mine.ts'
 import { grown } from '../core/remote.ts'
-import { pointers, track, trees, treesAt } from '../core/refs.ts'
+import { fitChips, pointers, track, trees, treesAt } from '../core/refs.ts'
 import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
 import { PULSE_MS, breath, dotCells, splitDot } from '../core/pulse.ts'
 import { parseShow } from '../core/show.ts'
@@ -36,6 +36,7 @@ const mine = atom({ plugin: 'git-graph', key: 'mine' } as const, [])
 
 const FOLDED_LANES = 3
 const WIDE = 72
+const SUBJECT_MIN = 12
 // ponytail: the terminal draws a tree of any size; the desktop is held to core/budget.ts, which cuts rows
 const MAX_FILES = 30
 
@@ -224,6 +225,7 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity)
   const Raster = e.surface === 'terminal' && 'Raster' in els ? els.Raster : undefined
   // a remote surface (the desktop) scrolls its pane itself and may send no window: read it as the top
   const scroll = e.props.scroll ?? { offset: 0, bodyRows: e.viewport?.rows ?? 30 }
+  const bodyColumns = e.props.bodyColumns ?? WIDE
   const msg = await read($, note)
 
   if (msg)
@@ -275,18 +277,21 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity)
       <Box key={`ref-card:${row.hash}`} flexDirection="column" marginLeft={2} borderStyle="round" borderColor={C.sel} paddingX={1}>
         {p.locals.map(l => (
           <Text key={`ref:b:${l.name}`}>
-            <Text color={C.green}>{`⎇ ${l.name}`}</Text>
-            <Text color={C.gray}>{`  ${l.sync}`}</Text>
+            {l.origin && <Text backgroundColor={tint(C.red)} color={C.white}>{` ⌂ origin/${l.name} `}</Text>}
+            {l.origin && ' '}
+            <Text backgroundColor={tint(C.green)} color={C.white}>{` ⎇ ${l.name} `}</Text>
+            {l.sync && <Text color={C.gray}>{`  ${l.sync}`}</Text>}
+            {l.isCurrent && <Text color={C.glow}>  현재 세션</Text>}
           </Text>
         ))}
-        {p.remotes.map(r => <Text key={`ref:r:${r}`} color={C.red}>{`⌂ ${r}`}</Text>)}
-        {p.tags.map(t => <Text key={`ref:t:${t}`} color={C.orange}>{`# ${t}`}</Text>)}
+        {p.remotes.map(r => <Text key={`ref:r:${r}`} backgroundColor={tint(C.red)} color={C.white}>{` ⌂ ${r} `}</Text>)}
+        {p.tags.map(t => <Text key={`ref:t:${t}`} backgroundColor={tint(C.orange)} color={C.white}>{` # ${t} `}</Text>)}
         {p.trees.map(t => (
           <Box key={`ref:w:${t.path}`} flexDirection="column">
             <Text>
               <Text bold color={t.isSelf ? C.glow : C.purple}>{`⑂ ${t.name}`}</Text>
               <Text color={t.branch ? C.green : C.yellow}>{t.branch ? `  ⎇ ${t.branch}` : `  ${t.head.slice(0, 7)} (detached)`}</Text>
-              {t.isSelf && <Text color={C.glow}>  이 세션</Text>}
+              {t.isSelf && <Text color={C.glow}>  현재 세션</Text>}
             </Text>
             <Text color={C.gray} wrap="truncate-start">{`  ${t.path}`}</Text>
             <Text color={C.gray}>{`  변경 ${treeStatus[t.path] === undefined ? '…' : treeStatus[t.path] === '?' ? '?' : `${treeStatus[t.path]}개`}`}</Text>
@@ -378,18 +383,18 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity)
     <Box key={`${pin}bar`}>
       {lanes > FOLDED_LANES && (
         // a hover needs a keyed Box around it to know what the pointer is over
-        <Box key={`${pin}lanes-bar`} marginRight={2}>
+        <Box key={`${pin}lanes-bar`} marginRight={1} paddingX={1} backgroundColor={C.sel}>
           <Button key={`${pin}lanes`} plain dimColor hover={{ color: C.blue }} onPress={() => void update($, wide, v => !v)}>
             {isWide ? '◂ 가지 접기' : `▸ 가지 ${lanes}개 모두 보기`}
           </Button>
         </Box>
       )}
-      <Box key={`${pin}remote-bar`} marginRight={2}>
+      <Box key={`${pin}remote-bar`} marginRight={1} paddingX={1} backgroundColor={C.sel}>
         <Button key={`${pin}remote`} plain dimColor={!isWatch} hover={{ color: C.blue }} onPress={() => void toggleWatch($).catch(() => {})}>
           {isWatch ? '원격 확인 끄기' : '원격 확인'}
         </Button>
       </Box>
-      <Box key={`${pin}trace-bar`}>
+      <Box key={`${pin}trace-bar`} paddingX={1} backgroundColor={C.sel}>
         <Button key={`${pin}trace`} plain dimColor={!isOn} hover={{ color: C.blue }} onPress={() => void update($, isTraced, v => !v)}>
           {isOn ? '경로 강조 끄기' : '경로 강조'}
         </Button>
@@ -424,6 +429,10 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity)
           ...(split.after.length > 0 ? [<Text>{split.after.map(seg)}</Text>] : []),
         ]
       : [<Text>{paint(row.graph).map(seg)}</Text>]
+    // cells the chips may take: the pane minus graph, HEAD chip, ✦, the right column (margin, author, hash, age) and a minimum subject
+    const room =
+      bodyColumns - row.graph.reduce((n, g) => n + [...g.text].length, 0) - (row.isHead ? 'HEAD'.length + 3 : 0) - (made.has(row.hash) ? 2 : 0) -
+      (1 + AUTHOR_CELLS + 2 + 1 + row.short.length + 4) - SUBJECT_MIN
     return (
       <Box
         key={`${pin}${row.hash}`}
@@ -439,7 +448,7 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity)
               {paint([chip('HEAD', C.blue)]).map(seg)}
             </Box>
           )}
-          {paint(row.refs).map((c, i) => (
+          {paint(fitChips(row.refs, room)).map((c, i) => (
             // a button on a dark tint of the chip's color; a keyed Box around it gives the hover its anchor
             <Box key={`${pin}box:r:${row.short}:${i}`} flexShrink={0} marginRight={1} paddingX={1} backgroundColor={tint(c.backgroundColor ?? C.gray)}>
               <Button
