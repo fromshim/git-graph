@@ -354,8 +354,8 @@ function session(): string {
 
 // ---- chip legend ----
 const LEGEND: Record<'ko' | 'en', string[]> = {
-  ko: ['현재 체크아웃한 커밋', '로컬 브랜치', 'origin 과 같은 커밋', 'origin 보다 앞서거나 뒤처진 커밋 수', '원격 브랜치', '태그', '워크트리 (둘 이상일 때만)', '현재 세션의 워크트리', '한 커밋에 넷 이상이면 묶어서'],
-  en: ['checked-out commit', 'local branch', 'same commit as origin', 'commits ahead of / behind origin', 'remote branch', 'tag', 'worktree (only when there are several)', 'this session\'s worktree', 'four or more on one commit, grouped'],
+  ko: ['현재 체크아웃한 커밋', '로컬 브랜치', 'origin 과 같은 커밋', 'origin 보다 앞서거나 뒤처진 커밋 수', '원격 브랜치', '태그', '워크트리 (둘 이상일 때만)', '현재 세션의 워크트리', '한 커밋에 넷 이상이면 묶어서', '칩이 줄에 다 안 들어가면 뒤쪽을 묶어서'],
+  en: ['checked-out commit', 'local branch', 'same commit as origin', 'commits ahead of / behind origin', 'remote branch', 'tag', 'worktree (only when there are several)', 'this session\'s worktree', 'four or more on one commit, grouped', 'chips that don\'t fit the row, folded'],
 }
 function legend(lang: 'ko' | 'en'): string {
   const one = (decor: string, known: GraphRefs, hash = '') => refChips(decor, hash, known).chips.map(button)
@@ -371,6 +371,7 @@ function legend(lang: 'ko' | 'en'): string {
     one('', { ...none, trees: [tree('name', 'h', false), tree('other', 'x', false)] }, 'h'),
     one('', { ...none, trees: [tree('name', 'h', true), tree('other', 'x', false)] }, 'h'),
     one('', { ...none, trees: [tree('a', 'h', false), tree('b', 'h', false), tree('c', 'h', false), tree('d', 'h', false), tree('e', 'h', false)] }, 'h'),
+    [chip('+2', C.gray)].map(button),
   ]
   const out: string[] = []
   chips.forEach((cs, i) => {
@@ -440,11 +441,31 @@ function flow(dir: string) {
   console.log(f, 'frames')
 }
 
+// ---- session.svg: everything the mod marks as "this session" ----
+function sessionMarks(): string {
+  const [log, refs, changed] = [LOG, REFS, CHANGED]
+  const h: Hist = [
+    [20, [2], BR[0]!, 'ana', 9, 'fix: ignore case'],
+    [1, [2], 'HEAD -> feat/search', 'ana', 30, 'feat: fuzzy matcher'],
+    [2, [4], '', 'ben', 90, 'refactor(search): split the scorer'],
+    ...base('main, origin/main'),
+  ]
+  LOG = toLog(h)
+  REFS = { heads: ['main', 'feat/search', BR[0]!], tracks: {}, trees: [app(1), tree(AG[0]!, 20, BR[0]!)] }
+  CHANGED = 0
+  TREE_CHANGES = { '/work/app': '0개', [`/work/app/.claude/worktrees/${AG[0]}`]: '0개' }
+  const { out, y } = pane({ open: '', refOpen: H(1), mine: new Set([H(20), H(1)]), card: { body: [], files: [] } })
+  const res = svg(W, y, out, 'Git graph')
+  ;[LOG, REFS, CHANGED] = [log, refs, changed]
+  return res
+}
+
 if (process.argv[2] === '--flow') flow(process.argv[3]!)
 else {
   mkdirSync('assets', { recursive: true })
   writeFileSync('assets/claude.svg', session())
+  writeFileSync('assets/session.svg', sessionMarks())
   writeFileSync('assets/legend.ko.svg', legend('ko'))
   writeFileSync('assets/legend.en.svg', legend('en'))
-  console.log('wrote assets/claude.svg, assets/legend.ko.svg, assets/legend.en.svg')
+  console.log('wrote assets/claude.svg, assets/session.svg, assets/legend.ko.svg, assets/legend.en.svg')
 }
