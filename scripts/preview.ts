@@ -160,7 +160,8 @@ function pane(v: View): { out: string[]; y: number } {
   // top lines (register.tsx `top`): one bar with the fold button (once lanes > 3), 원격 확인 and 경로 강조, then the uncommitted count
   const bar = [...(lanes > 3 ? ['◂ 가지 접기'] : []), '원격 확인', '경로 강조']
   let at = 0
-  for (const b of bar) (out.push(text(at, y, b, { opacity: 0.55 })), (at += width(b) + 2))
+  // each on a C.sel block with one cell of padding, one cell apart
+  for (const b of bar) (out.push(rect(at, y, width(b) + 2, C.sel) + text(at + 1, y, b, { opacity: 0.55 })), (at += width(b) + 3))
   y++
   if (CHANGED > 0) out.push(text(0, y, '◌ ', { fill: C.yellow }) + text(2, y++, `커밋 안 한 변경 ${CHANGED}개`))
 
@@ -512,9 +513,8 @@ if (process.argv[2] === '--claude') claude(process.argv[3]!)
 else if (process.argv[2] === '--flow') flow(process.argv[3]!)
 else {
   mkdirSync('assets', { recursive: true })
-  writeFileSync('assets/claude.svg', session())
   writeFileSync('assets/session.svg', sessionMarks())
   writeFileSync('assets/legend.ko.svg', legend('ko'))
   writeFileSync('assets/legend.en.svg', legend('en'))
-  console.log('wrote assets/claude.svg, assets/session.svg, assets/legend.ko.svg, assets/legend.en.svg')
+  console.log('wrote assets/session.svg, assets/legend.ko.svg, assets/legend.en.svg')
 }
