@@ -15,23 +15,37 @@ A Claude Code mod that draws your repository's git graph, live, in a side pane n
 The graph sits right next to the conversation, so you can hand commits to Claude with a click and see what Claude and its subagents committed at a glance.
 
 <p align="center">
-  <img src="assets/claude.svg" alt="A Claude Code session: the conversation and prompt box on the left, the git-graph pane with an open commit card on the right" width="880">
+  <img src="assets/claude.gif" alt="Pressing the HEAD 와 비교 (compare with HEAD) button on a commit card fills the Claude prompt box with the sentence asking to summarize what changed from commit a1b2c3d to HEAD" width="720">
 </p>
 
-- The card's `설명` (explain), `리뷰` (review) and `HEAD 와 비교` (compare with HEAD) and `체크아웃` (checkout) buttons fill the prompt box with a sentence such as `커밋 a1b2c3d 을 리뷰해줘`. Nothing is sent; edit it, then send. When a branch points at the commit, `체크아웃` asks to check out that branch instead of a detached HEAD.
+- The card's `설명` (explain), `리뷰` (review) and `HEAD 와 비교` (compare with HEAD) buttons fill the prompt box with a sentence such as `커밋 a1b2c3d 을 리뷰해줘`. `체크아웃` (checkout) appears only on the card of a commit that is not HEAD. If one branch points at the commit, it fills a sentence asking to check out that branch; if several do, one asking which branch to use first; if none, one that notes a detached HEAD and asks first whether to create a new branch.
 - Click a file line in the card to insert `@path` at the prompt cursor.
-- Commits Claude made in this session get a `✦` before the subject, including ones a subagent made in another worktree.
 - Click the `커밋 안 한 변경 N개` (uncommitted changes) line to list the changed files; its `커밋 메시지 정리` (draft a commit message) button fills the prompt box with `지금 변경을 커밋 메시지로 정리해줘`.
-- Press a chip (branch, remote, tag, worktree) and a list opens under that row: local branches (with their origin state), remote branches, tags and worktrees (path, uncommitted change count). The branch and worktree this session has checked out are marked `현재 세션` in yellow, and this session's HEAD dot glows yellow.
-- The chip card's branch lines carry `체크아웃` (checkout), `pull` and `push` buttons. They do not run git either; they fill the prompt box with a sentence. The checkout and pull sentences ask first what to do with uncommitted changes.
+- Press a chip (branch, remote, tag, worktree) and a list opens under that row: local branches (with their origin state), remote branches, tags and worktrees (path, uncommitted change count).
+- The chip card has buttons too. A local branch line carries `체크아웃` (checkout; not on the branch this session has checked out), `pull` when it is behind origin, and `push` when it is ahead or has no upstream. A remote branch line carries `체크아웃`. The checkout and pull sentences make Claude ask first what to do with uncommitted changes.
+- No button runs git. They only fill the prompt box with a sentence; edit it, then send. Nothing happens until you send.
 - Turn on `원격 확인` (check remote) to run `git fetch` every 60 seconds and get a toast when origin gets new commits.
 - Turn on `경로 강조` (highlight path) to gray out rows that are not ancestors of HEAD.
+
+### What this session marks
+
+<p align="center">
+  <img src="assets/session.svg" alt="git-graph pane: a glowing yellow HEAD dot, a yellow worktree chip next to purple subagent worktree chips, a ✦ before commits Claude made, and a chip card showing 현재 세션 (current session)" width="720">
+</p>
+
+- `✦` goes before the subject of commits Claude made in this session. While a Bash tool call runs, if the HEAD of any worktree moves, the commits created in between are recorded. So commits a subagent made in another worktree get a `✦` too. The record keeps the latest 200, and one call reads at most 50 commits per worktree.
+- There is a known limit: a commit made outside Claude, in another terminal, while a long Bash call runs can get a `✦` too.
+- The record lives in the session's state and is not saved anywhere else. A new session starts empty, so commits made before it have no `✦`.
+- Worktree chips show only when there is more than one worktree. This session's worktree is a yellow `⑂` chip; other worktrees (a subagent's, for example) are purple. With four or more worktrees on one commit, only this session's chip stays and the rest fold into `⑂ ×N`.
+- In the chip card, a yellow `현재 세션` (current session) sits next to the branch this session has checked out and next to this session's worktree.
+- This session's HEAD dot glows yellow.
 
 ## Features
 
 - One row per commit. Lanes are computed from parent hashes, and each lane keeps its color for its whole life.
 - Where several forks meet, link rows of their own keep the lines from running together.
 - HEAD is drawn as `●`, every other commit as `┿`, `┯` or `┷`. The `●` is bright yellow, and in the terminal it glows softly on a 2.4-second cycle.
+- When chips are wider than the row, the longest names are shortened in the middle with `…`. Chips that still do not fit fold into a gray `+N` chip; press it to open the card with the full names.
 - Past 3 lanes the graph folds, and a button unfolds it.
 - While you scroll, the top lines (fold, highlight-path and check-remote buttons, uncommitted count, HEAD) stay pinned above a `┊` gap.
 - Click a commit hash to open its message and changed files (up to 30).
@@ -57,6 +71,7 @@ Chips other than `HEAD` and the author chip are buttons on a dark tint of the ch
 | `⑂ name` | worktree (shown only when there is more than one) |
 | `⑂ name` (yellow) | this session's worktree |
 | `⑂ ×N` | the rest, grouped, when four or more worktrees sit on one commit |
+| `+N` | chips that don't fit the row, folded |
 
 ## Install
 

@@ -1,10 +1,10 @@
-// Regenerates assets/*.svg from the mod's own layout: run `npx -y tsx scripts/preview.ts` from the repo root (`--flow <dir>` writes the flow.gif frames instead, see scripts/flow.sh).
+// Regenerates assets/*.svg from the mod's own layout: run `npx -y tsx scripts/preview.ts` from the repo root (`--flow <dir>` / `--claude <dir>` write the flow.gif / claude.gif frames instead, see scripts/flow.sh).
 import { mkdirSync, writeFileSync } from 'node:fs'
 
 import { SEP } from '../core/commands.ts'
 import { AUTHOR_CELLS, layout } from '../core/layout.ts'
 import type { Row } from '../core/layout.ts'
-import { review } from '../core/prompt.ts'
+import { compare, review } from '../core/prompt.ts'
 import { splitDot } from '../core/pulse.ts'
 import { fitChips, pointers, refChips, track } from '../core/refs.ts'
 import { C, chip, mix, personColor, rgb, tint } from '../core/theme.ts'
@@ -69,7 +69,7 @@ type Style = { fill?: string; bold?: boolean; italic?: boolean; opacity?: number
 // Hangul runs (with the spaces/digits between Hangul) are one <text> with natural advance: a
 // fallback font's Hangul is narrower than 2 cells, so per-glyph placement would gap the letters.
 // Everything else sits glyph by glyph at column * CHAR_W.
-const HANGUL_RUN = /[\uac00-\ud7a3](?:[\uac00-\ud7a3 0-9()]*[\uac00-\ud7a3)])?/gu
+const HANGUL_RUN = /[\uac00-\ud7a3](?:[\uac00-\ud7a3 0-9A-Za-z()]*[\uac00-\ud7a3)])?/gu
 function text(col: number, row: number, s: string, st: Style = {}): string {
   const y = num(row * ROW_H + ROW_H * 0.78)
   const a = (x: string) => {
@@ -152,6 +152,7 @@ function svg(cols: number, rows: number, body: string[], title?: string): string
 }
 
 // ---- the pane, composed like hooks/register.tsx ----
+const POS = { row: 0, card: 0, rows: 0 } // where --claude aims the camera: the open commit's row, its card, the session's row count
 function pane(v: View): { out: string[]; y: number } {
   const { rows, lanes } = layout(LOG, NOW, REFS, Infinity)
   const out: string[] = []
@@ -159,7 +160,8 @@ function pane(v: View): { out: string[]; y: number } {
   // top lines (register.tsx `top`): one bar with the fold button (once lanes > 3), 원격 확인 and 경로 강조, then the uncommitted count
   const bar = [...(lanes > 3 ? ['◂ 가지 접기'] : []), '원격 확인', '경로 강조']
   let at = 0
-  for (const b of bar) (out.push(text(at, y, b, { opacity: 0.55 })), (at += width(b) + 2))
+  // each on a C.sel block with one cell of padding, one cell apart
+  for (const b of bar) (out.push(rect(at, y, width(b) + 2, C.sel) + text(at + 1, y, b, { opacity: 0.55 })), (at += width(b) + 3))
   y++
   if (CHANGED > 0) out.push(text(0, y, '◌ ', { fill: C.yellow }) + text(2, y++, `커밋 안 한 변경 ${CHANGED}개`))
 
@@ -201,7 +203,7 @@ function pane(v: View): { out: string[]; y: number } {
     }
     commit(r)
     if (r.hash === v.refOpen) y = refCard(out, y, r)
-    if (r.hash === v.open) y = card(out, y, v.card, r.isHead, v.hot)
+    if (r.hash === v.open) ((POS.row = y - 1), (POS.card = y), (y = card(out, y, v.card, r.isHead, v.hot)))
   }
   return { out, y }
 }
@@ -304,19 +306,20 @@ function card(out: string[], y0: number, data: CardData, isHead: boolean, hot?: 
 
 // ---- Claude Code session: the conversation on the left, the pane on the right ----
 const LEFT = 56 // conversation columns, including the one-column gutter before the divider
-function session(): string {
+function session(o: { open?: boolean; hot?: string; ask?: string; rows?: number } = {}): string {
   const mid = H(5) // the commit whose card is open
   const short = mid.slice(0, 7)
-  const { out: paneOut, y: rows } = pane({
-    open: mid,
+  const { out: paneOut, y } = pane({
+    open: o.open === false ? '' : mid,
     refOpen: H(1),
     mine: new Set([H(1), H(2), mid]),
     card: {
       body: ['feat(search): add a fuzzy matcher', 'Scores a query by subsequence distance.'],
       files: [['86', '0', 'core/search.ts'], ['31', '0', 'tests/search.test.ts'], ['4', '1', 'hooks/register.tsx']],
     },
-    hot: '리뷰',
+    hot: 'hot' in o ? o.hot : '리뷰',
   })
+  const rows = (POS.rows = Math.max(y, o.rows ?? 0))
   const out: string[] = [`<g transform="translate(${num((LEFT + 1) * CHAR_W)},0)">${paneOut.join('')}</g>`]
   for (let y = 0; y < rows; y++) out.push(text(LEFT, y, '│', { fill: C.sel }))
   const line = (y: number, parts: [string, Style?][], col = 0) => {
@@ -344,18 +347,18 @@ function session(): string {
   out.push(text(0, bottom, '╭' + '─'.repeat(inner) + '╮', { fill: C.gray }))
   out.push(text(0, bottom + 1, '│', { fill: C.gray }), text(inner + 1, bottom + 1, '│', { fill: C.gray }))
   out.push(text(0, bottom + 2, '╰' + '─'.repeat(inner) + '╯', { fill: C.gray }))
-  const ask = review(short)
+  const ask = o.ask ?? review(short)
   // the cursor is a tspan in the same <text>, so it follows wherever the font's Hangul advance ends
   out.push(text(2, bottom + 1, '> ', { fill: C.gray }))
-  out.push(text(4, bottom + 1, ask, { fill: C.white }).replace(/<\/text>$/, `<tspan fill="${C.fg}">\u2588</tspan></text>`))
+  out.push(ask ? text(4, bottom + 1, ask, { fill: C.white }).replace(/<\/text>$/, `<tspan fill="${C.fg}">\u2588</tspan></text>`) : text(4, bottom + 1, '\u2588', { fill: C.fg }))
   out.push(text(2, bottom + 3, '? 단축키 보기', { fill: C.gray }))
   return svg(LEFT + 1 + W, rows + 1, out, 'Claude Code')
 }
 
 // ---- chip legend ----
 const LEGEND: Record<'ko' | 'en', string[]> = {
-  ko: ['현재 체크아웃한 커밋', '로컬 브랜치', 'origin 과 같은 커밋', 'origin 보다 앞서거나 뒤처진 커밋 수', '원격 브랜치', '태그', '워크트리 (둘 이상일 때만)', '현재 세션의 워크트리', '한 커밋에 넷 이상이면 묶어서'],
-  en: ['checked-out commit', 'local branch', 'same commit as origin', 'commits ahead of / behind origin', 'remote branch', 'tag', 'worktree (only when there are several)', 'this session\'s worktree', 'four or more on one commit, grouped'],
+  ko: ['현재 체크아웃한 커밋', '로컬 브랜치', 'origin 과 같은 커밋', 'origin 보다 앞서거나 뒤처진 커밋 수', '원격 브랜치', '태그', '워크트리 (둘 이상일 때만)', '현재 세션의 워크트리', '한 커밋에 넷 이상이면 묶어서', '칩이 줄에 다 안 들어가면 뒤쪽을 묶어서'],
+  en: ['checked-out commit', 'local branch', 'same commit as origin', 'commits ahead of / behind origin', 'remote branch', 'tag', 'worktree (only when there are several)', 'this session\'s worktree', 'four or more on one commit, grouped', 'chips that don\'t fit the row, folded'],
 }
 function legend(lang: 'ko' | 'en'): string {
   const one = (decor: string, known: GraphRefs, hash = '') => refChips(decor, hash, known).chips.map(button)
@@ -371,6 +374,7 @@ function legend(lang: 'ko' | 'en'): string {
     one('', { ...none, trees: [tree('name', 'h', false), tree('other', 'x', false)] }, 'h'),
     one('', { ...none, trees: [tree('name', 'h', true), tree('other', 'x', false)] }, 'h'),
     one('', { ...none, trees: [tree('a', 'h', false), tree('b', 'h', false), tree('c', 'h', false), tree('d', 'h', false), tree('e', 'h', false)] }, 'h'),
+    [chip('+2', C.gray)].map(button),
   ]
   const out: string[] = []
   chips.forEach((cs, i) => {
@@ -440,11 +444,75 @@ function flow(dir: string) {
   console.log(f, 'frames')
 }
 
-if (process.argv[2] === '--flow') flow(process.argv[3]!)
+// ---- session.svg: everything the mod marks as "this session" ----
+function sessionMarks(): string {
+  const [log, refs, changed] = [LOG, REFS, CHANGED]
+  const h: Hist = [
+    [20, [2], BR[0]!, 'ana', 9, 'fix: ignore case'],
+    [1, [2], 'HEAD -> feat/search', 'ana', 30, 'feat: fuzzy matcher'],
+    [2, [4], '', 'ben', 90, 'refactor(search): split the scorer'],
+    ...base('main, origin/main'),
+  ]
+  LOG = toLog(h)
+  REFS = { heads: ['main', 'feat/search', BR[0]!], tracks: {}, trees: [app(1), tree(AG[0]!, 20, BR[0]!)] }
+  CHANGED = 0
+  TREE_CHANGES = { '/work/app': '0개', [`/work/app/.claude/worktrees/${AG[0]}`]: '0개' }
+  const { out, y } = pane({ open: '', refOpen: H(1), mine: new Set([H(20), H(1)]), card: { body: [], files: [] } })
+  const res = svg(W, y, out, 'Git graph')
+  ;[LOG, REFS, CHANGED] = [log, refs, changed]
+  return res
+}
+
+// ---- claude.gif: the session screen under a camera that zooms to cell size of flow.gif and walks pane row -> card -> 비교 button -> prompt box ----
+function claude(dir: string) {
+  const CW = 720, CH = 405 // camera in svg units: 720 wide is ~12.6 px per cell in a 1080 px gif, like flow.gif
+  const short = H(5).slice(0, 7)
+  const ask = compare(short)
+  session() // measures POS with the card open
+  const rows = POS.rows
+  const H_ = (rows + 4) * ROW_H
+  const row = (n: number) => (n + 2) * ROW_H
+  const btn = POS.card + 8 // the buttons line: top edge, title, 1 body line, summary, 3 files
+  const at = (x: number, y: number) => ({ x, y: Math.min(Math.max(y, 0), H_ - CH) })
+  const A = at((LEFT + 1) * CHAR_W, 0) // the pane from its top: title, buttons, HEAD
+  const B = at(A.x, row(btn) - 10 * ROW_H)
+  const C_ = at(0, row(rows - 3) - 12 * ROW_H)
+  const ease = (t: number) => (1 - Math.cos(Math.PI * t)) / 2
+  const mix2 = (p: typeof A, q: typeof A, t: number) => ({ x: p.x + (q.x - p.x) * ease(t), y: p.y + (q.y - p.y) * ease(t) })
+  // [frames, from, to, scene(t)]
+  type Scene = { open?: boolean; hot?: string; ask?: string }
+  const step = (n: number, p: typeof A, q: typeof A, scene: (t: number) => Scene) => ({ n, p, q, scene })
+  const shut: Scene = { open: false, hot: undefined, ask: '' }
+  const steps = [
+    step(12, A, A, () => shut),
+    step(8, A, A, () => ({ hot: undefined, ask: '' })), // the hash is pressed: the card opens
+    step(3, A, B, () => ({ hot: undefined, ask: '' })),
+    step(10, B, B, () => ({ hot: undefined, ask: '' })),
+    step(10, B, B, () => ({ hot: 'HEAD 와 비교', ask: '' })), // hover, then the press
+    step(6, B, C_, () => ({ hot: 'HEAD 와 비교', ask })), // the press fills the prompt box at once
+    step(24, C_, C_, () => ({ hot: 'HEAD 와 비교', ask })),
+    step(6, C_, A, t => (t < 0.7 ? { hot: 'HEAD 와 비교', ask } : shut)), // closes once the camera has left
+  ]
+  mkdirSync(dir, { recursive: true })
+  let f = 0
+  for (const { n, p, q, scene } of steps) {
+    for (let k = 0; k < n; k++, f++) {
+      const t = n > 1 ? k / (n - 1) : 1
+      const c = mix2(p, q, n > 1 ? (k + 1) / n : 1)
+      const s = session({ rows, ...scene(t) })
+        .replace(/ width="[\d.]+" height="[\d.]+" viewBox="[^"]*"/, ` width="${CW}" height="${CH}" viewBox="${num(c.x)} ${num(c.y)} ${CW} ${CH}"`)
+      writeFileSync(`${dir}/f${String(f).padStart(4, '0')}.svg`, s)
+    }
+  }
+  console.log(f, 'frames')
+}
+
+if (process.argv[2] === '--claude') claude(process.argv[3]!)
+else if (process.argv[2] === '--flow') flow(process.argv[3]!)
 else {
   mkdirSync('assets', { recursive: true })
-  writeFileSync('assets/claude.svg', session())
+  writeFileSync('assets/session.svg', sessionMarks())
   writeFileSync('assets/legend.ko.svg', legend('ko'))
   writeFileSync('assets/legend.en.svg', legend('en'))
-  console.log('wrote assets/claude.svg, assets/legend.ko.svg, assets/legend.en.svg')
+  console.log('wrote assets/session.svg, assets/legend.ko.svg, assets/legend.en.svg')
 }
