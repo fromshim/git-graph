@@ -357,7 +357,7 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity)
               ))}
               {!row.isHead && (
                 <Box key="box:ask:checkout" paddingX={1} backgroundColor={C.sel}>
-                  <Button key="ask:checkout" plain hover={{ color: C.blue }} onPress={() => void say($, checkoutCommit(short))}>
+                  <Button key="ask:checkout" plain hover={{ color: C.blue }} onPress={() => void say($, checkoutCommit(short, pointers(row.decor, row.hash, known).locals.map(l => l.name)))}>
                     체크아웃
                   </Button>
                 </Box>
