@@ -474,7 +474,7 @@ function claude(dir: string) {
   const row = (n: number) => (n + 2) * ROW_H
   const btn = POS.card + 8 // the buttons line: top edge, title, 1 body line, summary, 3 files
   const at = (x: number, y: number) => ({ x, y: Math.min(Math.max(y, 0), H_ - CH) })
-  const A = at((LEFT + 1) * CHAR_W, row(POS.row) - 4 * ROW_H)
+  const A = at((LEFT + 1) * CHAR_W, 0) // the pane from its top: title, buttons, HEAD
   const B = at(A.x, row(btn) - 10 * ROW_H)
   const C_ = at(0, row(rows - 3) - 12 * ROW_H)
   const ease = (t: number) => (1 - Math.cos(Math.PI * t)) / 2
@@ -483,16 +483,14 @@ function claude(dir: string) {
   type Scene = { open?: boolean; hot?: string; ask?: string }
   const step = (n: number, p: typeof A, q: typeof A, scene: (t: number) => Scene) => ({ n, p, q, scene })
   const shut: Scene = { open: false, hot: undefined, ask: '' }
-  const typed = (t: number) => ask.slice(0, Math.ceil(t * ask.length))
   const steps = [
     step(12, A, A, () => shut),
     step(8, A, A, () => ({ hot: undefined, ask: '' })), // the hash is pressed: the card opens
     step(3, A, B, () => ({ hot: undefined, ask: '' })),
     step(10, B, B, () => ({ hot: undefined, ask: '' })),
     step(10, B, B, () => ({ hot: 'HEAD 와 비교', ask: '' })), // hover, then the press
-    step(6, B, C_, () => ({ hot: 'HEAD 와 비교', ask: '' })),
-    step(16, C_, C_, t => ({ hot: 'HEAD 와 비교', ask: typed(t) })),
-    step(18, C_, C_, () => ({ hot: 'HEAD 와 비교', ask })),
+    step(6, B, C_, () => ({ hot: 'HEAD 와 비교', ask })), // the press fills the prompt box at once
+    step(24, C_, C_, () => ({ hot: 'HEAD 와 비교', ask })),
     step(6, C_, A, t => (t < 0.7 ? { hot: 'HEAD 와 비교', ask } : shut)), // closes once the camera has left
   ]
   mkdirSync(dir, { recursive: true })
