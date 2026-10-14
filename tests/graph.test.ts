@@ -6,7 +6,7 @@ import { grown } from '../core/remote.ts'
 import { age, fitChips, pointers, refChips, track, trees } from '../core/refs.ts'
 import { ancestors, dim } from '../core/ancestry.ts'
 import { parseChanges } from '../core/changes.ts'
-import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
+import { COMMIT_MESSAGE, checkout, checkoutCommit, checkoutRemote, pull, push, compare, explain, mention, review } from '../core/prompt.ts'
 import { MINE_CAP, addMine, moved } from '../core/mine.ts'
 import { parseShow } from '../core/show.ts'
 import { C, chip, tint } from '../core/theme.ts'
@@ -364,6 +364,14 @@ test('prompt texts and @mentions: a rename mentions its new path', () => {
   expect([explain('abc1234'), review('abc1234'), compare('abc1234')]).toEqual([
     '커밋 abc1234 을 설명해줘', '커밋 abc1234 을 리뷰해줘', '커밋 abc1234 부터 HEAD 까지 바뀐 점을 정리해줘',
   ])
+  const DIRTY = '커밋 안 한 변경이 있으면 커밋 / stash / 그대로 들고 가기 중 어떻게 할지 먼저 물어봐줘'
+  expect([checkout('feat/x'), checkoutRemote('origin/feat/x'), checkoutCommit('abc1234'), pull('main'), push('main')]).toEqual([
+    `feat/x 브랜치로 체크아웃해줘. ${DIRTY}`,
+    `origin/feat/x 를 체크아웃해줘. 로컬 브랜치가 없으면 추적 브랜치로 만들어줘. ${DIRTY}`,
+    `커밋 abc1234 으로 체크아웃해줘. detached HEAD 가 되니 새 브랜치를 만들지 먼저 물어봐줘. ${DIRTY}`,
+    `main 브랜치를 pull 해줘. ${DIRTY}`,
+    'main 브랜치를 push 해줘',
+  ])
   expect(COMMIT_MESSAGE).toBe('지금 변경을 커밋 메시지로 정리해줘')
   expect([mention('src/a.ts'), mention('src/{old => new}/a.ts'), mention('a.ts => b.ts'), mention('{ => lib}/a.ts')]).toEqual([
     '@src/a.ts ', '@src/new/a.ts ', '@b.ts ', '@lib/a.ts ',
@@ -406,6 +414,49 @@ test('an open card hands the commit to Claude: buttons fill the prompt box, a fi
   isFilled = false
   await ui.press({ key: 'ask:review' })
   expect(toasts).toEqual(['프롬프트 입력창에 넣지 못했어요'])
+  await ui.unmount()
+})
+
+test('git buttons fill the prompt box: the ref card by sync state, the commit card except on the HEAD row', async ($, on) => {
+  const fills: string[] = []
+  const out = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+  const lines = [
+    log('aaaaaaa1', 'bbbbbbb2', 'HEAD -> main, origin/main', 'TJ', 'head'),
+    log('bbbbbbb2', 'ccccccc3', 'feat/a, feat/b', 'TJ', 'two branches'),
+    log('ccccccc3', '', 'origin/feat/x', 'TJ', 'remote only'),
+  ].join('\n')
+  on('process.run', async (_, e) => {
+    if (e.argv[1] === 'log') return out(lines)
+    if (e.argv[1] === 'for-each-ref') return out('main\t\nfeat/a\t[ahead 1, behind 2]\nfeat/b\t\n')
+    if (e.argv[1] === 'show') return out('T\n\x1e\n')
+    return out('')
+  })
+  on('prompt.fill', async (_, e) => (fills.push(e.text), { isFilled: true }))
+  on('command.register', async () => ({ value: { command: 'git-graph' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'git-graph', surface: 'terminal', component: 'Pane', props: PROPS, requestId: 'git-graph' })
+  const has = async (k: string) => (await ui.find({ key: k })) !== undefined
+  // the current branch: no 체크아웃, and in sync with origin so no pull / push
+  await ui.press({ key: 'r:aaaaaaa:0' })
+  expect([await has('git:checkout:main'), await has('git:pull:main'), await has('git:push:main')]).toEqual([false, false, false])
+  // ahead and behind: all three; no upstream: 체크아웃 and push only
+  await ui.press({ key: 'r:bbbbbbb:0' })
+  expect([await has('git:checkout:feat/a'), await has('git:pull:feat/a'), await has('git:push:feat/a')]).toEqual([true, true, true])
+  expect([await has('git:checkout:feat/b'), await has('git:pull:feat/b'), await has('git:push:feat/b')]).toEqual([true, false, true])
+  await ui.press({ key: 'git:checkout:feat/a' })
+  await ui.press({ key: 'git:pull:feat/a' })
+  await ui.press({ key: 'git:push:feat/b' })
+  await ui.press({ key: 'r:ccccccc:0' })
+  await ui.press({ key: 'git:checkout:origin/feat/x' })
+  expect(fills).toEqual([checkout('feat/a'), pull('feat/a'), push('feat/b'), checkoutRemote('origin/feat/x')])
+  // the commit card: 체크아웃 on any row but HEAD
+  await ui.press({ key: 'c:aaaaaaa' })
+  expect(await has('ask:checkout')).toBe(false)
+  await ui.press({ key: 'c:bbbbbbb' })
+  await ui.press({ key: 'ask:checkout' })
+  expect(fills.at(-1)).toBe(checkoutCommit('bbbbbbb'))
   await ui.unmount()
 })
 

@@ -18,11 +18,12 @@ The graph sits right next to the conversation, so you can hand commits to Claude
   <img src="assets/claude.svg" alt="A Claude Code session: the conversation and prompt box on the left, the git-graph pane with an open commit card on the right" width="880">
 </p>
 
-- The card's `설명` (explain), `리뷰` (review) and `HEAD 와 비교` (compare with HEAD) buttons fill the prompt box with a sentence such as `커밋 a1b2c3d 을 리뷰해줘`. Nothing is sent; edit it, then send.
+- The card's `설명` (explain), `리뷰` (review) and `HEAD 와 비교` (compare with HEAD) and `체크아웃` (checkout) buttons fill the prompt box with a sentence such as `커밋 a1b2c3d 을 리뷰해줘`. Nothing is sent; edit it, then send.
 - Click a file line in the card to insert `@path` at the prompt cursor.
 - Commits Claude made in this session get a `✦` before the subject, including ones a subagent made in another worktree.
 - Click the `커밋 안 한 변경 N개` (uncommitted changes) line to list the changed files; its `커밋 메시지 정리` (draft a commit message) button fills the prompt box with `지금 변경을 커밋 메시지로 정리해줘`.
 - Press a chip (branch, remote, tag, worktree) and a list opens under that row: local branches (with their origin state), remote branches, tags and worktrees (path, uncommitted change count). The branch and worktree this session has checked out are marked `현재 세션` in yellow, and this session's HEAD dot glows yellow.
+- The chip card's branch lines carry `체크아웃` (checkout), `pull` and `push` buttons. They do not run git either; they fill the prompt box with a sentence. The checkout and pull sentences ask first what to do with uncommitted changes.
 - Turn on `원격 확인` (check remote) to run `git fetch` every 60 seconds and get a toast when origin gets new commits.
 - Turn on `경로 강조` (highlight path) to gray out rows that are not ancestors of HEAD.
 

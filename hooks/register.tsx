@@ -10,7 +10,7 @@ import { NEW, parseChanges } from '../core/changes.ts'
 import { addMine, moved } from '../core/mine.ts'
 import { grown } from '../core/remote.ts'
 import { fitChips, pointers, track, trees, treesAt } from '../core/refs.ts'
-import { COMMIT_MESSAGE, compare, explain, mention, review } from '../core/prompt.ts'
+import { COMMIT_MESSAGE, checkout, checkoutCommit, checkoutRemote, compare, explain, mention, pull, push, review } from '../core/prompt.ts'
 import { PULSE_MS, breath, dotCells, splitDot } from '../core/pulse.ts'
 import { parseShow } from '../core/show.ts'
 import { C, chip, personColor, tint } from '../core/theme.ts'
@@ -269,6 +269,15 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity)
     </Box>
   )
 
+  // a small gray-block button that puts the sentence in the prompt box
+  const gitBtn = (k: string, label: string, text: string) => (
+    <Box key={`box:git:${k}`} flexShrink={0} marginLeft={1} paddingX={1} backgroundColor={C.sel}>
+      <Button key={`git:${k}`} plain hover={{ color: C.blue }} onPress={() => void say($, text)}>
+        {label}
+      </Button>
+    </Box>
+  )
+
   // what points at this commit, under its row: each branch with its origin state, remotes, tags,
   // and each worktree with its branch, path and uncommitted count (this session's marked in yellow)
   const refCard = (row: Row) => {
@@ -276,15 +285,25 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity)
     return (
       <Box key={`ref-card:${row.hash}`} flexDirection="column" marginLeft={2} borderStyle="round" borderColor={C.sel} paddingX={1}>
         {p.locals.map(l => (
-          <Text key={`ref:b:${l.name}`}>
-            {l.origin && <Text backgroundColor={tint(C.red)} color={C.white}>{` ⌂ origin/${l.name} `}</Text>}
-            {l.origin && ' '}
-            <Text backgroundColor={tint(C.green)} color={C.white}>{` ⎇ ${l.name} `}</Text>
-            {l.sync && <Text color={C.gray}>{`  ${l.sync}`}</Text>}
-            {l.isCurrent && <Text color={C.glow}>  현재 세션</Text>}
-          </Text>
+          <Box key={`ref:b:${l.name}`}>
+            <Text wrap="truncate-end">
+              {l.origin && <Text backgroundColor={tint(C.red)} color={C.white}>{` ⌂ origin/${l.name} `}</Text>}
+              {l.origin && ' '}
+              <Text backgroundColor={tint(C.green)} color={C.white}>{` ⎇ ${l.name} `}</Text>
+              {l.sync && <Text color={C.gray}>{`  ${l.sync}`}</Text>}
+              {l.isCurrent && <Text color={C.glow}>  현재 세션</Text>}
+            </Text>
+            {!l.isCurrent && gitBtn(`checkout:${l.name}`, '체크아웃', checkout(l.name))}
+            {l.sync.includes('↓') && gitBtn(`pull:${l.name}`, 'pull', pull(l.name))}
+            {(l.sync.includes('↑') || l.sync === 'no upstream') && gitBtn(`push:${l.name}`, 'push', push(l.name))}
+          </Box>
         ))}
-        {p.remotes.map(r => <Text key={`ref:r:${r}`} backgroundColor={tint(C.red)} color={C.white}>{` ⌂ ${r} `}</Text>)}
+        {p.remotes.map(r => (
+          <Box key={`ref:r:${r}`}>
+            <Text wrap="truncate-end" backgroundColor={tint(C.red)} color={C.white}>{` ⌂ ${r} `}</Text>
+            {gitBtn(`checkout:${r}`, '체크아웃', checkoutRemote(r))}
+          </Box>
+        ))}
         {p.tags.map(t => <Text key={`ref:t:${t}`} backgroundColor={tint(C.orange)} color={C.white}>{` # ${t} `}</Text>)}
         {p.trees.map(t => (
           <Box key={`ref:w:${t.path}`} flexDirection="column">
@@ -336,6 +355,13 @@ async function paint($: EngineInterface, e: RenderInput<'Pane'>, cap = Infinity)
                   </Button>
                 </Box>
               ))}
+              {!row.isHead && (
+                <Box key="box:ask:checkout" paddingX={1} backgroundColor={C.sel}>
+                  <Button key="ask:checkout" plain hover={{ color: C.blue }} onPress={() => void say($, checkoutCommit(short))}>
+                    체크아웃
+                  </Button>
+                </Box>
+              )}
             </Box>
           </Box>
         )}

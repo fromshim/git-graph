@@ -201,7 +201,7 @@ function pane(v: View): { out: string[]; y: number } {
     }
     commit(r)
     if (r.hash === v.refOpen) y = refCard(out, y, r)
-    if (r.hash === v.open) y = card(out, y, v.card, v.hot)
+    if (r.hash === v.open) y = card(out, y, v.card, r.isHead, v.hot)
   }
   return { out, y }
 }
@@ -222,6 +222,16 @@ function frame(out: string[], y0: number, lines: ((x: number, y: number) => stri
   return y
 }
 
+// the small checkout / pull / push buttons after a ref line: a C.sel block each, one cell apart
+const gitButtons = (x: number, y: number, labels: string[]) => {
+  let c = x
+  return labels.map(b => {
+    const at = c + 1
+    c = at + width(b) + 2
+    return rect(at, y, width(b) + 2, C.sel) + text(at + 1, y, b)
+  }).join('')
+}
+
 // the ref list under a row (register.tsx `refCard`): branches with their origin state, remotes, tags, worktrees
 function refCard(out: string[], y0: number, r: Row): number {
   const p = pointers(r.decor, r.hash, REFS)
@@ -236,9 +246,12 @@ function refCard(out: string[], y0: number, r: Row): number {
       x--
       for (const [t, fill] of [[l.sync && `  ${l.sync}`, C.gray], [l.isCurrent && '  현재 세션', C.glow]] as const)
         if (t) (s += text(x, y, t, { fill }), (x += width(t)))
-      return s
+      return s + gitButtons(x, y, [...(l.isCurrent ? [] : ['체크아웃']), ...(l.sync.includes('↓') ? ['pull'] : []), ...(l.sync.includes('↑') || l.sync === 'no upstream' ? ['push'] : [])])
     }),
-    ...p.remotes.map(n => (x: number, y: number) => seg(x, y, button(chip(`⌂ ${n}`, C.red)))[0]),
+    ...p.remotes.map(n => (x: number, y: number) => {
+      const [m, next] = seg(x, y, button(chip(`⌂ ${n}`, C.red)))
+      return m + gitButtons(next, y, ['체크아웃'])
+    }),
     ...p.tags.map(n => (x: number, y: number) => seg(x, y, button(chip(`# ${n}`, C.orange)))[0]),
     ...p.trees.flatMap(t => [
       (x: number, y: number) => {
@@ -258,7 +271,7 @@ function refCard(out: string[], y0: number, r: Row): number {
 }
 
 // the expanded commit card (register.tsx `card`)
-function card(out: string[], y0: number, data: CardData, hot?: string): number {
+function card(out: string[], y0: number, data: CardData, isHead: boolean, hot?: string): number {
   const adds = data.files.reduce((n, f) => n + Number(f[0]), 0)
   const dels = data.files.reduce((n, f) => n + Number(f[1]), 0)
   const [title = '', ...more] = data.body
@@ -276,10 +289,10 @@ function card(out: string[], y0: number, data: CardData, hot?: string): number {
       const de = ` −${d}`.padEnd(6)
       return text(x, y, ad, { fill: C.green }) + text(x + 5, y, de, { fill: C.red }) + text(x + 11, y, path.slice(0, cut), { fill: C.gray }) + text(x + 11 + cut, y, path.slice(cut))
     }),
-    // the hand-to-Claude buttons (register.tsx): 설명, 리뷰, HEAD 와 비교, each on a C.sel block with one cell of padding, one cell apart
+    // the hand-to-Claude buttons (register.tsx): 설명, 리뷰, HEAD 와 비교, 체크아웃 (not on the HEAD row), each on a C.sel block with one cell of padding, one cell apart
     (x, y) => {
       let c = x
-      return ['설명', '리뷰', 'HEAD 와 비교'].map(b => {
+      return ['설명', '리뷰', 'HEAD 와 비교', ...(isHead ? [] : ['체크아웃'])].map(b => {
         const at = c
         c += width(b) + 3
         return rect(at, y, width(b) + 2, C.sel) + text(at + 1, y, b, b === hot ? { fill: C.blue } : {})
