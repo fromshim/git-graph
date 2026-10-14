@@ -18,7 +18,7 @@ The graph sits right next to the conversation, so you can hand commits to Claude
   <img src="assets/claude.svg" alt="A Claude Code session: the conversation and prompt box on the left, the git-graph pane with an open commit card on the right" width="880">
 </p>
 
-- The card's `설명` (explain), `리뷰` (review) and `HEAD 와 비교` (compare with HEAD) and `체크아웃` (checkout) buttons fill the prompt box with a sentence such as `커밋 a1b2c3d 을 리뷰해줘`. Nothing is sent; edit it, then send.
+- The card's `설명` (explain), `리뷰` (review) and `HEAD 와 비교` (compare with HEAD) and `체크아웃` (checkout) buttons fill the prompt box with a sentence such as `커밋 a1b2c3d 을 리뷰해줘`. Nothing is sent; edit it, then send. When a branch points at the commit, `체크아웃` asks to check out that branch instead of a detached HEAD.
 - Click a file line in the card to insert `@path` at the prompt cursor.
 - Commits Claude made in this session get a `✦` before the subject, including ones a subagent made in another worktree.
 - Click the `커밋 안 한 변경 N개` (uncommitted changes) line to list the changed files; its `커밋 메시지 정리` (draft a commit message) button fills the prompt box with `지금 변경을 커밋 메시지로 정리해줘`.

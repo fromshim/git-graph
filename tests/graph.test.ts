@@ -372,6 +372,8 @@ test('prompt texts and @mentions: a rename mentions its new path', () => {
     `main 브랜치를 pull 해줘. ${DIRTY}`,
     'main 브랜치를 push 해줘',
   ])
+  expect(checkoutCommit('abc1234', ['feat/x'])).toBe(`커밋 abc1234 을 가리키는 feat/x 브랜치로 체크아웃해줘. ${DIRTY}`)
+  expect(checkoutCommit('abc1234', ['feat/a', 'feat/b'])).toBe(`커밋 abc1234 을 가리키는 브랜치 feat/a, feat/b 중 어디로 체크아웃할지 먼저 물어봐줘. ${DIRTY}`)
   expect(COMMIT_MESSAGE).toBe('지금 변경을 커밋 메시지로 정리해줘')
   expect([mention('src/a.ts'), mention('src/{old => new}/a.ts'), mention('a.ts => b.ts'), mention('{ => lib}/a.ts')]).toEqual([
     '@src/a.ts ', '@src/new/a.ts ', '@b.ts ', '@lib/a.ts ',
@@ -423,11 +425,12 @@ test('git buttons fill the prompt box: the ref card by sync state, the commit ca
   const lines = [
     log('aaaaaaa1', 'bbbbbbb2', 'HEAD -> main, origin/main', 'TJ', 'head'),
     log('bbbbbbb2', 'ccccccc3', 'feat/a, feat/b', 'TJ', 'two branches'),
-    log('ccccccc3', '', 'origin/feat/x', 'TJ', 'remote only'),
+    log('ccccccc3', 'ddddddd4', 'origin/feat/x', 'TJ', 'remote only'),
+    log('ddddddd4', '', 'feat/c', 'TJ', 'one branch'),
   ].join('\n')
   on('process.run', async (_, e) => {
     if (e.argv[1] === 'log') return out(lines)
-    if (e.argv[1] === 'for-each-ref') return out('main\t\nfeat/a\t[ahead 1, behind 2]\nfeat/b\t\n')
+    if (e.argv[1] === 'for-each-ref') return out('main\t\nfeat/a\t[ahead 1, behind 2]\nfeat/b\t\nfeat/c\t\n')
     if (e.argv[1] === 'show') return out('T\n\x1e\n')
     return out('')
   })
@@ -454,9 +457,15 @@ test('git buttons fill the prompt box: the ref card by sync state, the commit ca
   // the commit card: 체크아웃 on any row but HEAD
   await ui.press({ key: 'c:aaaaaaa' })
   expect(await has('ask:checkout')).toBe(false)
+  await ui.press({ key: 'c:ccccccc' })
+  await ui.press({ key: 'ask:checkout' })
+  expect(fills.at(-1)).toBe(checkoutCommit('ccccccc'))
+  await ui.press({ key: 'c:ddddddd' })
+  await ui.press({ key: 'ask:checkout' })
+  expect(fills.at(-1)).toBe(checkoutCommit('ddddddd', ['feat/c']))
   await ui.press({ key: 'c:bbbbbbb' })
   await ui.press({ key: 'ask:checkout' })
-  expect(fills.at(-1)).toBe(checkoutCommit('bbbbbbb'))
+  expect(fills.at(-1)).toBe(checkoutCommit('bbbbbbb', ['feat/a', 'feat/b']))
   await ui.unmount()
 })
 
